@@ -9,7 +9,7 @@
 //	=== API REQUEST N ===  attempt N forwarded upstream (URL, auth, headers, body)
 //	=== API RESPONSE N === the upstream response for attempt N (raw SSE or JSON)
 //	=== RESPONSE ===       what the proxy returned to the client
-package logparse
+package cpa_log
 
 import (
 	"bufio"

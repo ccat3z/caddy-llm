@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ccat3z/caddy-llm/integration/cpa_log/logparse"
 	"github.com/ccat3z/caddy-llm/translate"
 )
 
@@ -155,7 +154,7 @@ func blockSortKey(b map[string]any) string {
 }
 
 // lastOKAPIResponse returns the last 2xx upstream response, or nil.
-func lastOKAPIResponse(lg *logparse.Log) *logparse.APIResponse {
+func lastOKAPIResponse(lg *Log) *APIResponse {
 	for i := len(lg.APIResponses) - 1; i >= 0; i-- {
 		if lg.APIResponses[i].Status >= 200 && lg.APIResponses[i].Status < 300 {
 			return &lg.APIResponses[i]
@@ -167,7 +166,7 @@ func lastOKAPIResponse(lg *logparse.Log) *logparse.APIResponse {
 // lastAPIResponse returns the last upstream response with a real HTTP status,
 // or nil. (Some files contain an empty un-numbered "=== API RESPONSE ==="
 // section that parses to status 0; skip those.)
-func lastAPIResponse(lg *logparse.Log) *logparse.APIResponse {
+func lastAPIResponse(lg *Log) *APIResponse {
 	for i := len(lg.APIResponses) - 1; i >= 0; i-- {
 		if lg.APIResponses[i].Status > 0 {
 			return &lg.APIResponses[i]
@@ -177,7 +176,7 @@ func lastAPIResponse(lg *logparse.Log) *logparse.APIResponse {
 }
 
 // clientModel extracts the model name from the client request body.
-func clientModel(lg *logparse.Log) string {
+func clientModel(lg *Log) string {
 	var req struct {
 		Model string `json:"model"`
 	}

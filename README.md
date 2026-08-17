@@ -13,13 +13,13 @@ the actual forwarding).
 | `claude2openai` | `http.handlers.claude2openai` | Translates Anthropic `/v1/messages` requests to OpenAI chat-completions and translates responses (JSON and SSE) back. Forwarding is left to `reverse_proxy`. |
 | `llm_tracer <stage>` | `http.handlers.llm_tracer` | Captures the request/response passing through it (both sides of a translation when chained) and records them to the trace store. |
 | `llm_traces_api` | `http.handlers.llm_traces_api` | HTTP query API for recorded traces. |
-| `llm_trace_store` (global) | `llm.trace_store` | Trace persistence: append-only `traces.jsonl` + in-memory index. |
+| `llm_tracer` (global) | `llm.tracer` | Trace persistence: append-only `traces.jsonl` + in-memory index. |
 
 ## Quick start
 
 ```caddyfile
 {
-	llm_trace_store {
+	llm_tracer {
 		dir /var/lib/caddy/llm-traces
 	}
 }
@@ -107,10 +107,10 @@ Package layout:
 ```
 translate/                pure translation library (no Caddy deps)
 claudetoopenai/           claude2openai handler
-trace/                    llm_tracer handler + llm.trace_store app + query API
+trace/                    llm_tracer handler + llm.tracer app + query API
 integration/              full-chain integration tests
-integration/cpa_log/      corpus replay tests + sanitized cases
-integration/cpa_log/logparse/  CLIProxyAPI log-format parser
+integration/cpa_log/      corpus replay tests, sanitized cases, and the
+                          CLIProxyAPI log-format parser (logparse.go)
 cmd/caddy-llm/            custom binary entry
 all.go                    side-effect import of every module
 ```

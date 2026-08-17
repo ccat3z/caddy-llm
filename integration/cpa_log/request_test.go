@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ccat3z/caddy-llm/integration/cpa_log/logparse"
 	"github.com/ccat3z/caddy-llm/translate"
 )
 
@@ -166,13 +165,13 @@ func truncJSON(b []byte) string {
 	return string(b[:max]) + "...(truncated)"
 }
 
-func parseLogFile(name string) (*logparse.Log, error) {
+func parseLogFile(name string) (*Log, error) {
 	f, err := os.Open(filepath.Join(logsDir, name))
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	return logparse.Parse(f)
+	return Parse(f)
 }
 
 // normalizeGoldenOverrides rewrites deployment-config artifacts in a golden

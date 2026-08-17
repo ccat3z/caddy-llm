@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ccat3z/caddy-llm/integration/cpa_log/logparse"
 	"github.com/ccat3z/caddy-llm/translate"
 )
 
@@ -16,14 +15,14 @@ import (
 // Unlike the corpus tests above, these run everywhere — no external directory
 // required.
 
-func loadCase(t *testing.T, name string) *logparse.Log {
+func loadCase(t *testing.T, name string) *Log {
 	t.Helper()
 	f, err := os.Open(filepath.Join("testdata", name))
 	if err != nil {
 		t.Fatalf("open %s: %v", name, err)
 	}
 	defer f.Close()
-	lg, err := logparse.Parse(f)
+	lg, err := Parse(f)
 	if err != nil {
 		t.Fatalf("parse %s: %v", name, err)
 	}

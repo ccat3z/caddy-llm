@@ -1,4 +1,4 @@
-package logparse
+package cpa_log
 
 import (
 	"encoding/json"
@@ -8,8 +8,8 @@ import (
 	"testing"
 )
 
-// logsDir points at the CLIProxyAPI real request logs. Tests skip when absent.
-var logsDir = filepath.Join("..", "..", "..", "..", "CLIproxyAPI", "data", "logs")
+// logsDir and sample reuse the package-level corpus directory (see
+// request_test.go; controlled by CPA_LOG_DIR).
 
 func sample(name string) string { return filepath.Join(logsDir, name) }
 

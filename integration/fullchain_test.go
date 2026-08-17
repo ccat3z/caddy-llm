@@ -36,7 +36,7 @@ func TestFullChain(t *testing.T) {
 			skip_install_trust
 			admin localhost:2999
 			http_port 8080
-			llm_trace_store {
+			llm_tracer {
 				dir %s
 			}
 		}
