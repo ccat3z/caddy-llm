@@ -48,7 +48,7 @@ func TestFullChain(t *testing.T) {
 				reverse_proxy %s
 			}
 			route /llm/traces* {
-				llm_traces_api
+				llm_tracer_api
 			}
 		}`, traceDir, upstream.URL), "caddyfile")
 

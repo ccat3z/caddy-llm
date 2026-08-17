@@ -28,7 +28,7 @@ func init() {
 	caddy.RegisterModule(Store{})
 	httpcaddyfile.RegisterGlobalOption("llm_tracer", parseGlobalOption)
 	caddy.RegisterModule(TraceAPI{})
-	httpcaddyfile.RegisterHandlerDirective("llm_traces_api", parseTraceAPICaddyfile)
+	httpcaddyfile.RegisterHandlerDirective("llm_tracer_api", parseTraceAPICaddyfile)
 }
 
 // Store is the tracer app: a caddy.App that persists trace entries to an
@@ -279,7 +279,7 @@ type TraceAPI struct {
 // CaddyModule returns the Caddy module information.
 func (TraceAPI) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
-		ID:  "http.handlers.llm_traces_api",
+		ID:  "http.handlers.llm_tracer_api",
 		New: func() caddy.Module { return new(TraceAPI) },
 	}
 }
@@ -289,7 +289,7 @@ func (t *TraceAPI) Provision(ctx caddy.Context) error {
 	t.logger = ctx.Logger()
 	appIface, err := ctx.App("llm_tracer")
 	if err != nil {
-		return fmt.Errorf("llm_traces_api requires the llm_tracer global option: %w", err)
+		return fmt.Errorf("llm_tracer_api requires the llm_tracer global option: %w", err)
 	}
 	t.app = appIface.(*Store)
 	return nil
