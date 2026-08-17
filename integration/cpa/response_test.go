@@ -10,11 +10,11 @@ import (
 	"github.com/ccat3z/caddy-llm/translate"
 )
 
-// TestCorpusResponseTranslation replays (upstream OpenAI response -> client
+// TestCliProxyAPIRegressionResponse replays (upstream OpenAI response -> client
 // Claude response) pairs from non-streaming real logs through
 // translate.TranslateResponse and compares semantically.
-func TestCorpusResponseTranslation(t *testing.T) {
-	files := corpusFiles(t)
+func TestCliProxyAPIRegressionResponse(t *testing.T) {
+	files := regressionFiles(t)
 	if len(files) == 0 {
 		t.Skip("no usable golden files")
 	}
@@ -64,12 +64,12 @@ func TestCorpusResponseTranslation(t *testing.T) {
 	t.Logf("verified %d/%d files", ran, len(files))
 }
 
-// TestCorpusErrorTranslation replays upstream error responses through
+// TestCliProxyAPIRegressionError replays upstream error responses through
 // translate.TranslateError and compares against the client-facing error body. Errors are
 // rare in the corpus, so this scans the full log directory for error-final
 // files rather than the standard sample.
-func TestCorpusErrorTranslation(t *testing.T) {
-	files := corpusFiles(t)
+func TestCliProxyAPIRegressionError(t *testing.T) {
+	files := regressionFiles(t)
 	if len(files) == 0 {
 		t.Skip("no usable golden files")
 	}

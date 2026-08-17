@@ -7,13 +7,13 @@ import (
 	"testing"
 )
 
-// TestCorpusStreamTranslation replays (upstream OpenAI SSE -> client Claude
+// TestCliProxyAPIRegressionStream replays (upstream OpenAI SSE -> client Claude
 // SSE) pairs from real streaming logs through translate.StreamConverter and compares the
 // reconstructed Claude event streams semantically: same event sequence with
 // same logical content (concatenated text/thinking, assembled tool inputs,
 // stop_reason, usage).
-func TestCorpusStreamTranslation(t *testing.T) {
-	files := corpusFiles(t)
+func TestCliProxyAPIRegressionStream(t *testing.T) {
+	files := regressionFiles(t)
 	if len(files) == 0 {
 		t.Skip("no usable golden files")
 	}

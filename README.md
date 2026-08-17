@@ -109,8 +109,8 @@ translate/                pure translation library (no Caddy deps)
 claudetoopenai/           claude2openai handler
 trace/                    trace handler + llm_tracer app + query API
 integration/              full-chain integration tests
-integration/cpa/      corpus replay tests, sanitized cases, and the
-                          CLIProxyAPI log-format parser (logparse.go)
+integration/cpa/      CLIProxyAPI regression tests, sanitized cases,
+                          and the log-format parser (logparse.go)
 cmd/caddy-llm/            custom binary entry
 all.go                    side-effect import of every module
 ```

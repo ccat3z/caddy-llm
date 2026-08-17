@@ -12,7 +12,7 @@ import (
 	"github.com/ccat3z/caddy-llm/translate"
 )
 
-// logsDir is the CLIProxyAPI request-log corpus, controlled by CPA_LOG_DIR
+// logsDir is the CLIProxyAPI CLIProxyAPI regression log set, controlled by CPA_LOG_DIR
 // (default: ../CLIproxyAPI/data/logs relative to the repo root). Tests skip
 // when the directory is absent.
 var logsDir = func() string {
@@ -27,10 +27,10 @@ const (
 	defaultSample = 300        // files exercised per run
 )
 
-// corpusFiles deterministically samples usable log files: sorted by name,
+// regressionFiles deterministically samples usable log files: sorted by name,
 // filtered by pattern and size, then every Kth file up to defaultSample.
-// CORPUS_ALL=1 uses every matching file; CORPUS_SAMPLE=N overrides the target.
-func corpusFiles(t *testing.T) []string {
+// CPA_REGRESSION_ALL=1 uses every matching file; CPA_REGRESSION_SAMPLE=N overrides the target.
+func regressionFiles(t *testing.T) []string {
 	t.Helper()
 	entries, err := os.ReadDir(logsDir)
 	if err != nil {
@@ -50,11 +50,11 @@ func corpusFiles(t *testing.T) []string {
 	}
 	sort.Strings(names)
 
-	if os.Getenv("CORPUS_ALL") == "1" {
+	if os.Getenv("CPA_REGRESSION_ALL") == "1" {
 		return names
 	}
 	target := defaultSample
-	if v := os.Getenv("CORPUS_SAMPLE"); v != "" {
+	if v := os.Getenv("CPA_REGRESSION_SAMPLE"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			target = n
 		}
@@ -70,11 +70,11 @@ func corpusFiles(t *testing.T) []string {
 	return out
 }
 
-// TestCorpusRequestTranslation replays (client Claude request -> upstream
+// TestCliProxyAPIRegressionRequest replays (client Claude request -> upstream
 // OpenAI request) pairs from real logs through translate.TranslateRequest and compares
 // semantically (unmarshal + reflect.DeepEqual) against what CLIProxyAPI sent.
-func TestCorpusRequestTranslation(t *testing.T) {
-	files := corpusFiles(t)
+func TestCliProxyAPIRegressionRequest(t *testing.T) {
+	files := regressionFiles(t)
 	if len(files) == 0 {
 		t.Skip("no usable golden files")
 	}
