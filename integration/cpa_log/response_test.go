@@ -1,4 +1,4 @@
-package translate
+package cpa_log
 
 import (
 	"encoding/json"
@@ -7,14 +7,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ccat3z/caddy-llm/internal/llmtestutil/logparse"
+	"github.com/ccat3z/caddy-llm/integration/cpa_log/logparse"
+	"github.com/ccat3z/caddy-llm/translate"
 )
 
-// TestGoldenResponseTranslation replays (upstream OpenAI response -> client
+// TestCorpusResponseTranslation replays (upstream OpenAI response -> client
 // Claude response) pairs from non-streaming real logs through
-// TranslateResponse and compares semantically.
-func TestGoldenResponseTranslation(t *testing.T) {
-	files := goldenFiles(t)
+// translate.TranslateResponse and compares semantically.
+func TestCorpusResponseTranslation(t *testing.T) {
+	files := corpusFiles(t)
 	if len(files) == 0 {
 		t.Skip("no usable golden files")
 	}
@@ -42,11 +43,11 @@ func TestGoldenResponseTranslation(t *testing.T) {
 		model := clientModel(lg)
 
 		t.Run(name, func(t *testing.T) {
-			var in OpenAIResponse
+			var in translate.OpenAIResponse
 			if err := json.Unmarshal(up.Body, &in); err != nil {
 				t.Skipf("unparseable upstream body: %v", err)
 			}
-			got, err := json.Marshal(TranslateResponse(&in, model))
+			got, err := json.Marshal(translate.TranslateResponse(&in, model))
 			if err != nil {
 				t.Fatalf("marshal: %v", err)
 			}
@@ -64,12 +65,12 @@ func TestGoldenResponseTranslation(t *testing.T) {
 	t.Logf("verified %d/%d files", ran, len(files))
 }
 
-// TestGoldenErrorTranslation replays upstream error responses through
-// TranslateError and compares against the client-facing error body. Errors are
+// TestCorpusErrorTranslation replays upstream error responses through
+// translate.TranslateError and compares against the client-facing error body. Errors are
 // rare in the corpus, so this scans the full log directory for error-final
 // files rather than the standard sample.
-func TestGoldenErrorTranslation(t *testing.T) {
-	files := goldenFiles(t)
+func TestCorpusErrorTranslation(t *testing.T) {
+	files := corpusFiles(t)
 	if len(files) == 0 {
 		t.Skip("no usable golden files")
 	}
@@ -105,7 +106,7 @@ func TestGoldenErrorTranslation(t *testing.T) {
 			continue
 		}
 		t.Run(name, func(t *testing.T) {
-			got := TranslateError(up.Status, up.Body)
+			got := translate.TranslateError(up.Status, up.Body)
 			assertJSONDiffEq(t, "translated error", lg.Response.Body, got)
 		})
 		ran++

@@ -16,7 +16,7 @@ import (
 	"github.com/caddyserver/caddy/v2/caddytest"
 
 	// Register all caddy-llm modules (this test uses the full chain).
-	_ "github.com/ccat3z/caddy-llm/internal/all"
+	_ "github.com/ccat3z/caddy-llm"
 )
 
 // TestFullChain: listen -> llm_tracer(claude) -> claude2openai ->

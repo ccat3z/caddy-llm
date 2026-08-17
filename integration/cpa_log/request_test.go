@@ -1,4 +1,4 @@
-package translate
+package cpa_log
 
 import (
 	"encoding/json"
@@ -9,21 +9,29 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ccat3z/caddy-llm/internal/llmtestutil/logparse"
+	"github.com/ccat3z/caddy-llm/integration/cpa_log/logparse"
+	"github.com/ccat3z/caddy-llm/translate"
 )
 
-// logsDir points at the CLIProxyAPI real request logs.
-var logsDir = filepath.Join("..", "..", "..", "CLIproxyAPI", "data", "logs")
+// logsDir is the CLIProxyAPI request-log corpus, controlled by CPA_LOG_DIR
+// (default: ../CLIproxyAPI/data/logs relative to the repo root). Tests skip
+// when the directory is absent.
+var logsDir = func() string {
+	if d := os.Getenv("CPA_LOG_DIR"); d != "" {
+		return d
+	}
+	return filepath.Join("..", "..", "..", "CLIproxyAPI", "data", "logs")
+}()
 
 const (
 	maxGoldenFile = 512 * 1024 // skip unusually large transcripts
 	defaultSample = 300        // files exercised per run
 )
 
-// goldenFiles deterministically samples usable log files: sorted by name,
+// corpusFiles deterministically samples usable log files: sorted by name,
 // filtered by pattern and size, then every Kth file up to defaultSample.
-// GOLDEN_ALL=1 uses every matching file; GOLDEN_SAMPLE=N overrides the target.
-func goldenFiles(t *testing.T) []string {
+// CORPUS_ALL=1 uses every matching file; CORPUS_SAMPLE=N overrides the target.
+func corpusFiles(t *testing.T) []string {
 	t.Helper()
 	entries, err := os.ReadDir(logsDir)
 	if err != nil {
@@ -43,11 +51,11 @@ func goldenFiles(t *testing.T) []string {
 	}
 	sort.Strings(names)
 
-	if os.Getenv("GOLDEN_ALL") == "1" {
+	if os.Getenv("CORPUS_ALL") == "1" {
 		return names
 	}
 	target := defaultSample
-	if v := os.Getenv("GOLDEN_SAMPLE"); v != "" {
+	if v := os.Getenv("CORPUS_SAMPLE"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			target = n
 		}
@@ -63,11 +71,11 @@ func goldenFiles(t *testing.T) []string {
 	return out
 }
 
-// TestGoldenRequestTranslation replays (client Claude request -> upstream
-// OpenAI request) pairs from real logs through TranslateRequest and compares
+// TestCorpusRequestTranslation replays (client Claude request -> upstream
+// OpenAI request) pairs from real logs through translate.TranslateRequest and compares
 // semantically (unmarshal + reflect.DeepEqual) against what CLIProxyAPI sent.
-func TestGoldenRequestTranslation(t *testing.T) {
-	files := goldenFiles(t)
+func TestCorpusRequestTranslation(t *testing.T) {
+	files := corpusFiles(t)
 	if len(files) == 0 {
 		t.Skip("no usable golden files")
 	}
@@ -81,13 +89,13 @@ func TestGoldenRequestTranslation(t *testing.T) {
 			continue
 		}
 		t.Run(name, func(t *testing.T) {
-			var in AnthropicRequest
+			var in translate.AnthropicRequest
 			if err := json.Unmarshal(lg.RequestBody, &in); err != nil {
 				t.Skipf("unparseable client body: %v", err)
 			}
-			out, err := TranslateRequest(&in)
+			out, err := translate.TranslateRequest(&in)
 			if err != nil {
-				t.Fatalf("TranslateRequest: %v", err)
+				t.Fatalf("translate.TranslateRequest: %v", err)
 			}
 			got, err := json.Marshal(out)
 			if err != nil {
@@ -171,7 +179,7 @@ func parseLogFile(name string) (*logparse.Log, error) {
 // upstream body back to pure-translation semantics:
 //   - max_tokens may have been overridden by the deployment's payload rules
 //   - model may have had a provider prefix stripped (e.g. "friday/glm-5.2")
-func normalizeGoldenOverrides(golden []byte, in *AnthropicRequest) []byte {
+func normalizeGoldenOverrides(golden []byte, in *translate.AnthropicRequest) []byte {
 	var m map[string]any
 	if err := json.Unmarshal(golden, &m); err != nil {
 		return golden

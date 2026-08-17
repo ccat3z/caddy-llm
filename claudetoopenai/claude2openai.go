@@ -18,7 +18,7 @@ import (
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"go.uber.org/zap"
 
-	"github.com/ccat3z/caddy-llm/internal/translate"
+	"github.com/ccat3z/caddy-llm/translate"
 )
 
 func init() {

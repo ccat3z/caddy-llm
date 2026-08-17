@@ -1,4 +1,4 @@
-package tracestore
+package trace
 
 import (
 	"context"

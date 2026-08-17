@@ -8,7 +8,7 @@ import (
 	_ "github.com/caddyserver/caddy/v2/modules/standard"
 
 	// caddy-llm modules.
-	_ "github.com/ccat3z/caddy-llm/internal/all"
+	_ "github.com/ccat3z/caddy-llm"
 )
 
 func main() {

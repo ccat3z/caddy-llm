@@ -324,3 +324,12 @@ func findEvent(events []SSEEvent, name string) SSEEvent {
 func countOccurrences(s, sub string) int {
 	return strings.Count(s, sub)
 }
+
+// trunc shortens long strings in test failure output.
+func trunc(s string) string {
+	const max = 600
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "...(truncated)"
+}

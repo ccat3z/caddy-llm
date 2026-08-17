@@ -87,24 +87,32 @@ Or use [xcaddy](https://github.com/caddyserver/xcaddy):
 go test ./...
 ```
 
-Golden tests replay real request logs from `../CLIProxyAPI/data/logs`
-(~30k recorded exchanges: original Claude request → forwarded OpenAI request,
-upstream response → client-facing response). When that directory is absent the
-golden tests skip. Controls:
+Two layers of translation tests, both driven by CLIProxyAPI request logs
+(original Claude request → forwarded OpenAI request, upstream response →
+client-facing response):
 
-- `GOLDEN_SAMPLE=N` — number of files to test (default 300)
-- `GOLDEN_ALL=1` — test every file (~20k verified pairs, ~1 min)
+1. **Corpus integration tests** (`integration/cpa_log`) replay the real log
+   directory. The directory comes from `CPA_LOG_DIR` (default:
+   `../CLIProxyAPI/data/logs`); tests skip when it is absent. Controls:
+   - `CORPUS_SAMPLE=N` — number of files to test (default 300)
+   - `CORPUS_ALL=1` — every file (~20k verified pairs, ~1 min)
+2. **Committed sanitized cases** (`integration/cpa_log/testdata`) run
+   everywhere without the corpus: five representative exchanges (text stream,
+   tool-call stream, thinking stream, non-streaming tool response, mid-stream
+   error) extracted from real logs with credentials, cookies, session IDs,
+   hostnames, and user paths redacted — guarded by a leak test.
 
 Package layout:
 
 ```
-internal/translate/       pure translation library (no Caddy deps)
-internal/claudetoopenai/  claude2openai handler
-internal/tracer/          llm_tracer handler
-internal/tracestore/      llm.trace_store app + query API handler
-internal/llmtestutil/logparse/  CLIProxyAPI log-format parser (test fixture)
-internal/integration/     full-chain integration tests
+translate/                pure translation library (no Caddy deps)
+claudetoopenai/           claude2openai handler
+trace/                    llm_tracer handler + llm.trace_store app + query API
+integration/              full-chain integration tests
+integration/cpa_log/      corpus replay tests + sanitized cases
+integration/cpa_log/logparse/  CLIProxyAPI log-format parser
 cmd/caddy-llm/            custom binary entry
+all.go                    side-effect import of every module
 ```
 
 ## Status / limitations

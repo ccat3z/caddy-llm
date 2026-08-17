@@ -1,9 +1,4 @@
-// Package tracer provides the llm_tracer Caddy handler: it captures the
-// request and response (including SSE streams) passing through it and records
-// them to the llm.trace_store app. Place one before claude2openai (Claude
-// format) and one after (OpenAI format) to trace both sides of the
-// translation.
-package tracer
+package trace
 
 import (
 	"bytes"
@@ -18,8 +13,6 @@ import (
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"go.uber.org/zap"
-
-	"github.com/ccat3z/caddy-llm/internal/tracestore"
 )
 
 func init() {
@@ -40,7 +33,7 @@ type Tracer struct {
 	Stage string `json:"stage,omitempty"`
 
 	logger *zap.Logger
-	app    *tracestore.App
+	app    *App
 }
 
 // CaddyModule returns the Caddy module information.
@@ -58,13 +51,13 @@ func (t *Tracer) Provision(ctx caddy.Context) error {
 	if err != nil {
 		return err
 	}
-	t.app = appIface.(*tracestore.App)
+	t.app = appIface.(*App)
 	return nil
 }
 
 // store returns the trace store, tolerating app Start not having run yet
 // (returns nil; traces are then dropped with a log).
-func (t *Tracer) store() tracestore.Store {
+func (t *Tracer) store() Store {
 	if t.app == nil {
 		return nil
 	}
@@ -109,7 +102,7 @@ func (t *Tracer) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 	rw := &teeResponseWriter{ResponseWriter: w}
 	err := next.ServeHTTP(rw, r)
 
-	entry := &tracestore.Entry{
+	entry := &Entry{
 		ID:              traceID + "/" + t.Stage,
 		Stage:           t.Stage,
 		Timestamp:       start.UTC(),

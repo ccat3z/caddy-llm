@@ -1,18 +1,19 @@
-package translate
+package cpa_log
 
 import (
 	"encoding/json"
+	"github.com/ccat3z/caddy-llm/translate"
 	"strings"
 	"testing"
 )
 
-// TestGoldenStreamTranslation replays (upstream OpenAI SSE -> client Claude
-// SSE) pairs from real streaming logs through StreamConverter and compares the
+// TestCorpusStreamTranslation replays (upstream OpenAI SSE -> client Claude
+// SSE) pairs from real streaming logs through translate.StreamConverter and compares the
 // reconstructed Claude event streams semantically: same event sequence with
 // same logical content (concatenated text/thinking, assembled tool inputs,
 // stop_reason, usage).
-func TestGoldenStreamTranslation(t *testing.T) {
-	files := goldenFiles(t)
+func TestCorpusStreamTranslation(t *testing.T) {
+	files := corpusFiles(t)
 	if len(files) == 0 {
 		t.Skip("no usable golden files")
 	}
@@ -59,45 +60,34 @@ func TestGoldenStreamTranslation(t *testing.T) {
 	t.Logf("verified %d/%d files", ran, len(files))
 }
 
-// replayUpstreamStream feeds upstream SSE data payloads through the converter.
-func replayUpstreamStream(t *testing.T, body []byte, model string) []SSEEvent {
+// replayUpstreamStream feeds upstream SSE bytes through a StreamFeeder.
+func replayUpstreamStream(t *testing.T, body []byte, model string) []translate.SSEEvent {
 	t.Helper()
-	c := NewStreamConverter(model)
-	s := &sseScanner{}
-	if err := s.Write(body); err != nil {
-		t.Fatalf("scanner write: %v", err)
-	}
-	var out []SSEEvent
-	for _, d := range s.Scan() {
-		if d.done {
-			break
-		}
-		evts, err := c.Feed(d.payload)
-		if err != nil {
-			t.Fatalf("Feed: %v", err)
-		}
-		out = append(out, evts...)
-	}
-	done, err := c.Done()
+	f := translate.NewStreamFeeder(model)
+	evts, err := f.Write(body)
 	if err != nil {
-		t.Fatalf("Done: %v", err)
+		t.Fatalf("feed: %v", err)
 	}
-	return append(out, done...)
+	done, err := f.Close()
+	if err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	return append(evts, done...)
 }
 
 // parseClaudeSSE parses a client-facing Claude SSE body into events. Handles
 // CLIProxyAPI logging artifacts: multiple `data:` lines glued onto one line
 // without newline separators, and a doubled trailing [DONE].
-func parseClaudeSSE(body string) []SSEEvent {
-	var events []SSEEvent
-	var cur SSEEvent
+func parseClaudeSSE(body string) []translate.SSEEvent {
+	var events []translate.SSEEvent
+	var cur translate.SSEEvent
 	flush := func(data string) {
 		if data == "[DONE]" {
 			return // terminator artifact we do not reproduce
 		}
 		cur.Data = []byte(data)
 		events = append(events, cur)
-		cur = SSEEvent{}
+		cur = translate.SSEEvent{}
 	}
 	for _, line := range strings.Split(body, "\n") {
 		line = strings.TrimRight(line, "\r")
@@ -144,7 +134,7 @@ type toolShape struct {
 	input string
 }
 
-func shapeStream(t *testing.T, events []SSEEvent) streamShape {
+func shapeStream(t *testing.T, events []translate.SSEEvent) streamShape {
 	t.Helper()
 	var sh streamShape
 	toolInputs := map[int]*strings.Builder{}
@@ -212,7 +202,7 @@ func shapeStream(t *testing.T, events []SSEEvent) streamShape {
 	return sh
 }
 
-func compareStreams(t *testing.T, wantEvents, gotEvents []SSEEvent) {
+func compareStreams(t *testing.T, wantEvents, gotEvents []translate.SSEEvent) {
 	t.Helper()
 	want := shapeStream(t, wantEvents)
 	got := shapeStream(t, gotEvents)

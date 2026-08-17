@@ -1,7 +1,7 @@
-// Package tracestore provides the llm.trace_store Caddy app: persistent
+// Package trace provides LLM request tracing for Caddy:
 // storage for LLM request traces written by llm_tracer handlers, plus an HTTP
 // query API handler module.
-package tracestore
+package trace
 
 import (
 	"bufio"
