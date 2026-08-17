@@ -44,6 +44,47 @@ Point any Anthropic client (Claude Code, Anthropic SDK) at the server. Requests
 to `POST /v1/messages` are translated and forwarded; sub-resources like
 `/v1/messages/count_tokens` pass through untouched.
 
+## JSON configuration
+
+Everything is configurable via raw JSON too (`caddy-llm run --config caddy.json`),
+with the same handler chain:
+
+```json
+{
+  "apps": {
+    "llm_tracer": { "dir": "/var/lib/caddy/llm-traces" },
+    "http": {
+      "servers": {
+        "srv0": {
+          "listen": [":443"],
+          "routes": [
+            {
+              "match": [{ "path": ["/llm/traces*"] }],
+              "handle": [{ "handler": "llm_tracer_api" }]
+            },
+            {
+              "handle": [
+                { "handler": "trace", "stage": "claude" },
+                { "handler": "claude2openai" },
+                { "handler": "trace", "stage": "openai" },
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [{ "dial": "open.bigmodel.cn:443" }]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  }
+}
+```
+
+Note: unlike the Caddyfile adapter, raw JSON routes match strictly in order —
+keep the `/llm/traces*` route (and any other matched routes) above the
+catch-all proxy route.
+
 ## How it works
 
 ```
@@ -91,13 +132,14 @@ Two layers of translation tests, both driven by CLIProxyAPI request logs
 (original Claude request → forwarded OpenAI request, upstream response →
 client-facing response):
 
-1. **Corpus integration tests** (`integration/cpa`) replay the real log
-   directory. The directory comes from `CPA_LOG_DIR` (default:
-   `../CLIProxyAPI/data/logs`); tests skip when it is absent. Controls:
-   - `CORPUS_SAMPLE=N` — number of files to test (default 300)
-   - `CORPUS_ALL=1` — every file (~20k verified pairs, ~1 min)
+1. **CLIProxyAPI regression tests** (`integration/cpa`) replay the real log
+   directory — every recorded exchange becomes a regression case.
+   from `CPA_LOG_DIR` (default: `../CLIproxyAPI/data/logs`); tests skip
+   when absent. Controls:
+   - `CPA_REGRESSION_SAMPLE=N` — number of files to test (default 300)
+   - `CPA_REGRESSION_ALL=1` — every file (~20k verified pairs, ~1 min)
 2. **Committed sanitized cases** (`integration/cpa/testdata`) run
-   everywhere without the corpus: five representative exchanges (text stream,
+   everywhere without the log directory: five representative exchanges (text stream,
    tool-call stream, thinking stream, non-streaming tool response, mid-stream
    error) extracted from real logs with credentials, cookies, session IDs,
    hostnames, and user paths redacted — guarded by a leak test.
@@ -108,8 +150,8 @@ Package layout:
 translate/                pure translation library (no Caddy deps)
 claudetoopenai/           claude2openai handler
 trace/                    trace handler + llm_tracer app + query API
-integration/              full-chain integration tests
-integration/cpa/      CLIProxyAPI regression tests, sanitized cases,
+integration/              full-chain integration tests (Caddyfile and JSON)
+integration/cpa/          CLIProxyAPI regression tests, sanitized cases,
                           and the log-format parser (logparse.go)
 cmd/caddy-llm/            custom binary entry
 all.go                    side-effect import of every module
