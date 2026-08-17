@@ -33,7 +33,7 @@ type Tracer struct {
 	Stage string `json:"stage,omitempty"`
 
 	logger *zap.Logger
-	app    *App
+	app    *Store
 }
 
 // CaddyModule returns the Caddy module information.
@@ -51,17 +51,17 @@ func (t *Tracer) Provision(ctx caddy.Context) error {
 	if err != nil {
 		return err
 	}
-	t.app = appIface.(*App)
+	t.app = appIface.(*Store)
 	return nil
 }
 
 // store returns the trace store, tolerating app Start not having run yet
 // (returns nil; traces are then dropped with a log).
-func (t *Tracer) store() Store {
+func (t *Tracer) storage() storage {
 	if t.app == nil {
 		return nil
 	}
-	return t.app.Store()
+	return t.app.Storage()
 }
 
 // Interface guard
@@ -121,7 +121,7 @@ func (t *Tracer) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 	}
 	// Record asynchronously — tracing must not add latency.
 	go func() {
-		s := t.store()
+		s := t.storage()
 		if s == nil {
 			t.logger.Error("trace store not started; dropping trace", zap.String("id", entry.ID))
 			return

@@ -25,15 +25,15 @@ import (
 )
 
 func init() {
-	caddy.RegisterModule(App{})
+	caddy.RegisterModule(Store{})
 	httpcaddyfile.RegisterGlobalOption("llm_tracer", parseGlobalOption)
 	caddy.RegisterModule(TraceAPI{})
 	httpcaddyfile.RegisterHandlerDirective("llm_traces_api", parseTraceAPICaddyfile)
 }
 
-// App is the trace store: a caddy.App that persists trace entries to an
+// Store is the tracer app: a caddy.App that persists trace entries to an
 // append-only JSONL file and serves queries.
-type App struct {
+type Store struct {
 	// Dir is the directory holding traces.jsonl. Default: "llm-traces" in the
 	// current working directory.
 	Dir string `json:"dir,omitempty"`
@@ -43,15 +43,15 @@ type App struct {
 }
 
 // CaddyModule returns the Caddy module information.
-func (App) CaddyModule() caddy.ModuleInfo {
+func (Store) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
 		ID:  "llm.tracer",
-		New: func() caddy.Module { return &App{} },
+		New: func() caddy.Module { return new(Store) },
 	}
 }
 
 // Provision sets up the module.
-func (a *App) Provision(ctx caddy.Context) error {
+func (a *Store) Provision(ctx caddy.Context) error {
 	a.logger = ctx.Logger()
 	if a.Dir == "" {
 		a.Dir = "llm-traces"
@@ -60,13 +60,13 @@ func (a *App) Provision(ctx caddy.Context) error {
 }
 
 // Start opens (or creates) the trace log and builds the in-memory index.
-func (a *App) Start() error {
+func (a *Store) Start() error {
 	a.disk = newDiskStore(filepath.Join(a.Dir, "traces.jsonl"))
 	return a.disk.open()
 }
 
 // Stop closes the trace log.
-func (a *App) Stop() error {
+func (a *Store) Stop() error {
 	if a.disk != nil {
 		return a.disk.close()
 	}
@@ -75,12 +75,13 @@ func (a *App) Stop() error {
 
 // Interface guards
 var (
-	_ caddy.Provisioner = (*App)(nil)
-	_ caddy.App         = (*App)(nil)
+	_ caddy.Provisioner = (*Store)(nil)
+	_ caddy.App         = (*Store)(nil)
 )
 
-// Store returns the underlying store (used by the tracer handler).
-func (a *App) Store() Store { return a.disk }
+// Storage returns the underlying storage implementation (used by the tracer
+// handler and the traces API).
+func (a *Store) Storage() storage { return a.disk }
 
 // Entry is one captured request/response exchange at one chain stage.
 type Entry struct {
@@ -120,7 +121,7 @@ type Query struct {
 }
 
 // Store persists and queries trace entries.
-type Store interface {
+type storage interface {
 	Append(ctx context.Context, e *Entry) error
 	List(ctx context.Context, q Query) ([]EntrySummary, error)
 	Get(ctx context.Context, id string) (*Entry, error)
@@ -264,7 +265,7 @@ func trimNewline(b []byte) []byte {
 	return b
 }
 
-var _ Store = (*diskStore)(nil)
+var _ storage = (*diskStore)(nil)
 
 // ---------- query API handler ----------
 
@@ -272,14 +273,14 @@ var _ Store = (*diskStore)(nil)
 // GET /llm/traces/{id} (full entry).
 type TraceAPI struct {
 	logger *zap.Logger
-	app    *App
+	app    *Store
 }
 
 // CaddyModule returns the Caddy module information.
 func (TraceAPI) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
 		ID:  "http.handlers.llm_traces_api",
-		New: func() caddy.Module { return &TraceAPI{} },
+		New: func() caddy.Module { return new(TraceAPI) },
 	}
 }
 
@@ -290,7 +291,7 @@ func (t *TraceAPI) Provision(ctx caddy.Context) error {
 	if err != nil {
 		return fmt.Errorf("llm_traces_api requires the llm_tracer global option: %w", err)
 	}
-	t.app = appIface.(*App)
+	t.app = appIface.(*Store)
 	return nil
 }
 
@@ -312,14 +313,14 @@ func (t *TraceAPI) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyh
 			Limit:  intQuery(r, "limit", 100),
 			Offset: intQuery(r, "offset", 0),
 		}
-		entries, err := t.app.Store().List(r.Context(), q)
+		entries, err := t.app.Storage().List(r.Context(), q)
 		if err != nil {
 			return err
 		}
 		return json.NewEncoder(w).Encode(entries)
 	}
 
-	e, err := t.app.Store().Get(r.Context(), path)
+	e, err := t.app.Storage().Get(r.Context(), path)
 	if err != nil {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte(`{"error":"not found"}`))
@@ -343,7 +344,7 @@ func intQuery(r *http.Request, name string, def int) int {
 // ---------- Caddyfile ----------
 
 func parseGlobalOption(d *caddyfile.Dispenser, _ any) (any, error) {
-	app := &App{}
+	app := new(Store)
 	for d.Next() {
 		if d.NextArg() {
 			app.Dir = d.Val()

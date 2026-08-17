@@ -91,12 +91,12 @@ Two layers of translation tests, both driven by CLIProxyAPI request logs
 (original Claude request → forwarded OpenAI request, upstream response →
 client-facing response):
 
-1. **Corpus integration tests** (`integration/cpa_log`) replay the real log
+1. **Corpus integration tests** (`integration/cpa`) replay the real log
    directory. The directory comes from `CPA_LOG_DIR` (default:
    `../CLIProxyAPI/data/logs`); tests skip when it is absent. Controls:
    - `CORPUS_SAMPLE=N` — number of files to test (default 300)
    - `CORPUS_ALL=1` — every file (~20k verified pairs, ~1 min)
-2. **Committed sanitized cases** (`integration/cpa_log/testdata`) run
+2. **Committed sanitized cases** (`integration/cpa/testdata`) run
    everywhere without the corpus: five representative exchanges (text stream,
    tool-call stream, thinking stream, non-streaming tool response, mid-stream
    error) extracted from real logs with credentials, cookies, session IDs,
@@ -109,7 +109,7 @@ translate/                pure translation library (no Caddy deps)
 claudetoopenai/           claude2openai handler
 trace/                    llm_tracer handler + llm.tracer app + query API
 integration/              full-chain integration tests
-integration/cpa_log/      corpus replay tests, sanitized cases, and the
+integration/cpa/      corpus replay tests, sanitized cases, and the
                           CLIProxyAPI log-format parser (logparse.go)
 cmd/caddy-llm/            custom binary entry
 all.go                    side-effect import of every module

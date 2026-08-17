@@ -116,7 +116,7 @@ func TestTraceAPIServeHTTP(t *testing.T) {
 	if err := d.Append(ctx, entry("t1", "claude", 200)); err != nil {
 		t.Fatal(err)
 	}
-	api := &TraceAPI{app: &App{disk: d}}
+	api := &TraceAPI{app: &Store{disk: d}}
 
 	// List.
 	r := httptest.NewRequest("GET", "/llm/traces", nil)

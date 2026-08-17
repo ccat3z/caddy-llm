@@ -1,4 +1,4 @@
-package cpa_log
+package cpa
 
 import (
 	"encoding/json"
