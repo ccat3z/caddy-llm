@@ -1,0 +1,288 @@
+// Package claudetoopenai provides the Caddy HTTP handler that translates
+// Anthropic Messages API requests (/v1/messages) into OpenAI chat-completions
+// requests, and translates the upstream response back. Actual forwarding is
+// delegated to a reverse_proxy later in the chain.
+package claudetoopenai
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strconv"
+	"strings"
+
+	"github.com/caddyserver/caddy/v2"
+	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
+	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
+	"go.uber.org/zap"
+
+	"github.com/ccat3z/caddy-llm/internal/translate"
+)
+
+func init() {
+	caddy.RegisterModule(Claude2OpenAI{})
+	httpcaddyfile.RegisterHandlerDirective("claude2openai", parseCaddyfile)
+}
+
+// Claude2OpenAI translates Anthropic /v1/messages requests to OpenAI
+// chat-completions and back.
+type Claude2OpenAI struct {
+	// UpstreamPath is the path forwarded to the upstream. Default:
+	// /v1/chat/completions.
+	UpstreamPath string `json:"upstream_path,omitempty"`
+
+	logger *zap.Logger
+}
+
+// CaddyModule returns the Caddy module information.
+func (Claude2OpenAI) CaddyModule() caddy.ModuleInfo {
+	return caddy.ModuleInfo{
+		ID:  "http.handlers.claude2openai",
+		New: func() caddy.Module { return &Claude2OpenAI{} },
+	}
+}
+
+// Provision sets up the module.
+func (c *Claude2OpenAI) Provision(ctx caddy.Context) error {
+	c.logger = ctx.Logger()
+	if c.UpstreamPath == "" {
+		c.UpstreamPath = "/v1/chat/completions"
+	}
+	return nil
+}
+
+// Interface guard
+var _ caddyhttp.MiddlewareHandler = (*Claude2OpenAI)(nil)
+
+const maxBodySize = 128 << 20 // 128MB request/response cap
+
+func (c *Claude2OpenAI) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
+	// Only translate message-create requests; everything else passes through.
+	if r.Method != http.MethodPost || !isMessagesPath(r.URL.Path) {
+		return next.ServeHTTP(w, r)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodySize))
+	if err != nil {
+		return c.writeClaudeError(w, http.StatusBadRequest, "invalid_request_error", "read request body: "+err.Error())
+	}
+
+	var req translate.AnthropicRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		return c.writeClaudeError(w, http.StatusBadRequest, "invalid_request_error", "parse request body: "+err.Error())
+	}
+
+	openaiReq, err := translate.TranslateRequest(&req)
+	if err != nil {
+		return c.writeClaudeError(w, http.StatusBadRequest, "invalid_request_error", "translate request: "+err.Error())
+	}
+	outBody, err := json.Marshal(openaiReq)
+	if err != nil {
+		return c.writeClaudeError(w, http.StatusInternalServerError, "api_error", err.Error())
+	}
+
+	// Replace the request for downstream handlers (reverse_proxy).
+	r.Body = io.NopCloser(bytes.NewReader(outBody))
+	r.ContentLength = int64(len(outBody))
+	r.Header.Set("Content-Length", strconv.Itoa(len(outBody)))
+	r.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(outBody)), nil
+	}
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Del("Anthropic-Version")
+	r.Header.Del("Anthropic-Beta")
+	r.URL.Path = c.UpstreamPath
+	r.URL.RawPath = ""
+
+	var rw *responseWriter
+	if req.Stream {
+		rw = newStreamResponseWriter(w, req.Model)
+	} else {
+		rw = newBufferedResponseWriter(w, req.Model)
+	}
+	if err := next.ServeHTTP(rw, r); err != nil {
+		// Handler errors abort the chain; translate to a Claude error body.
+		return c.writeClaudeError(w, http.StatusInternalServerError, "api_error", err.Error())
+	}
+	rw.finish()
+	return nil
+}
+
+func isMessagesPath(path string) bool {
+	// Only message-create is translated; sub-resources (count_tokens, batches)
+	// belong to the Anthropic API and are passed through untouched.
+	return path == "/v1/messages"
+}
+
+// writeClaudeError writes an Anthropic-style error response without calling
+// the rest of the chain.
+func (c *Claude2OpenAI) writeClaudeError(w http.ResponseWriter, status int, errType, msg string) error {
+	body := translate.TranslateError(status, []byte(`{"error":{"type":"`+errType+`","message":`+jsonString(msg)+`}}`))
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
+	return nil
+}
+
+func jsonString(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
+// responseWriter wraps the client ResponseWriter and translates the upstream
+// OpenAI response into Claude format.
+type responseWriter struct {
+	w       http.ResponseWriter
+	model   string
+	stream  bool
+	status  int
+	written bool
+
+	// buffered (non-stream) mode
+	buf     bytes.Buffer
+	maxBuff bool
+
+	// streaming mode
+	feeder *translate.StreamFeeder
+}
+
+func newBufferedResponseWriter(w http.ResponseWriter, model string) *responseWriter {
+	return &responseWriter{w: w, model: model}
+}
+
+func newStreamResponseWriter(w http.ResponseWriter, model string) *responseWriter {
+	return &responseWriter{
+		w:      w,
+		model:  model,
+		stream: true,
+		feeder: translate.NewStreamFeeder(model),
+	}
+}
+
+func (rw *responseWriter) Header() http.Header { return rw.w.Header() }
+
+func (rw *responseWriter) WriteHeader(status int) {
+	rw.status = status
+	if status != http.StatusOK || !rw.stream {
+		// Errors and non-streaming responses are buffered for translation.
+		rw.buf.Reset()
+		return
+	}
+	// Streaming 200: pass headers through with SSE content type.
+	h := rw.w.Header()
+	h.Set("Content-Type", "text/event-stream")
+	h.Set("Cache-Control", "no-cache")
+	rw.w.WriteHeader(status)
+	rw.written = true
+}
+
+func (rw *responseWriter) Write(p []byte) (int, error) {
+	if rw.stream && rw.status == http.StatusOK {
+		return rw.writeStream(p)
+	}
+	if rw.buf.Len()+len(p) > maxBodySize && !rw.maxBuff {
+		rw.maxBuff = true
+	}
+	if !rw.maxBuff {
+		rw.buf.Write(p)
+	}
+	return len(p), nil
+}
+
+// writeStream converts upstream SSE incrementally, flushing per event.
+func (rw *responseWriter) writeStream(p []byte) (int, error) {
+	events, err := rw.feeder.Write(p)
+	if err != nil {
+		return 0, err
+	}
+	if len(events) > 0 {
+		if _, err := rw.w.Write(translate.EncodeAll(events)); err != nil {
+			return 0, err
+		}
+	}
+	if f, ok := rw.w.(http.Flusher); ok {
+		f.Flush()
+	}
+	return len(p), nil
+}
+
+// finish translates and writes the buffered response (non-streaming), or
+// closes the stream (streaming).
+func (rw *responseWriter) finish() {
+	if rw.stream {
+		if rw.status == http.StatusOK {
+			events, err := rw.feeder.Close()
+			if err == nil {
+				_, _ = rw.w.Write(translate.EncodeAll(events))
+			}
+			if f, ok := rw.w.(http.Flusher); ok {
+				f.Flush()
+			}
+		}
+		return
+	}
+	if rw.written {
+		return
+	}
+	status := rw.status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	body := rw.buf.Bytes()
+	var out []byte
+	if status >= 200 && status < 300 && len(body) > 0 {
+		var resp translate.OpenAIResponse
+		if err := json.Unmarshal(body, &resp); err == nil {
+			out, _ = json.Marshal(translate.TranslateResponse(&resp, rw.model))
+		} else {
+			status = http.StatusBadGateway
+			out = translate.TranslateError(status, body)
+		}
+	} else {
+		out = translate.TranslateError(status, body)
+	}
+	h := rw.w.Header()
+	h.Set("Content-Type", "application/json")
+	h.Set("Content-Length", strconv.Itoa(len(out)))
+	rw.w.WriteHeader(status)
+	_, _ = rw.w.Write(out)
+	rw.written = true
+}
+
+// Flush implements http.Flusher so reverse_proxy streaming works.
+func (rw *responseWriter) Flush() {
+	if f, ok := rw.w.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+var _ http.Flusher = (*responseWriter)(nil)
+
+// ---------- Caddyfile ----------
+
+func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error) {
+	var c Claude2OpenAI
+	for h.Next() {
+		if h.NextArg() {
+			c.UpstreamPath = h.Val()
+		}
+		for h.NextBlock(0) {
+			switch h.Val() {
+			case "upstream_path":
+				if !h.NextArg() {
+					return nil, h.ArgErr()
+				}
+				c.UpstreamPath = h.Val()
+			default:
+				return nil, h.Errf("unknown subdirective %q", h.Val())
+			}
+		}
+	}
+	if c.UpstreamPath != "" && !strings.HasPrefix(c.UpstreamPath, "/") {
+		return nil, fmt.Errorf("upstream_path must start with /")
+	}
+	return &c, nil
+}

@@ -1,0 +1,5 @@
+bwrap_flags+=(
+  --ro-bind ../CLIProxyAPI "$(realpath ../CLIproxyAPI)"
+)
+
+set -x

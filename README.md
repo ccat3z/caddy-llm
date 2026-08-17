@@ -1,0 +1,115 @@
+# caddy-llm
+
+Caddy plugin for proxying LLM APIs — a clean rewrite of
+[CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI). Translates the
+Anthropic Messages API (`/v1/messages`) to OpenAI chat-completions upstreams,
+with request tracing, using only stock Caddy mechanics (`reverse_proxy` does
+the actual forwarding).
+
+## Modules
+
+| Caddyfile directive | Module ID | What it does |
+|---|---|---|
+| `claude2openai` | `http.handlers.claude2openai` | Translates Anthropic `/v1/messages` requests to OpenAI chat-completions and translates responses (JSON and SSE) back. Forwarding is left to `reverse_proxy`. |
+| `llm_tracer <stage>` | `http.handlers.llm_tracer` | Captures the request/response passing through it (both sides of a translation when chained) and records them to the trace store. |
+| `llm_traces_api` | `http.handlers.llm_traces_api` | HTTP query API for recorded traces. |
+| `llm_trace_store` (global) | `llm.trace_store` | Trace persistence: append-only `traces.jsonl` + in-memory index. |
+
+## Quick start
+
+```caddyfile
+{
+	llm_trace_store {
+		dir /var/lib/caddy/llm-traces
+	}
+}
+
+api.example.com {
+	route {
+		llm_tracer claude        # capture client-facing (Claude) traffic
+		claude2openai            # Claude -> OpenAI
+		llm_tracer openai        # capture upstream (OpenAI) traffic
+		reverse_proxy https://open.bigmodel.cn {
+			header_up Authorization "Bearer {$UPSTREAM_KEY}"
+		}
+	}
+
+	route /llm/traces* {
+		llm_traces_api
+	}
+}
+```
+
+Point any Anthropic client (Claude Code, Anthropic SDK) at the server. Requests
+to `POST /v1/messages` are translated and forwarded; sub-resources like
+`/v1/messages/count_tokens` pass through untouched.
+
+## How it works
+
+```
+client ──Claude──▶ llm_tracer(claude) ──▶ claude2openai ──OpenAI──▶ llm_tracer(openai) ──▶ reverse_proxy ──▶ upstream
+                                         translates req/body/path,
+                                         strips anthropic-* headers,
+                                         sets GetBody (retry-safe)
+```
+
+Responses flow back through the same chain: non-streaming JSON is buffered and
+translated in one shot; SSE streams are converted incrementally (line-buffered,
+flushed per event). Tool-call arguments are buffered per OpenAI index and
+flushed as a single `input_json_delta`. `[DONE]` is never forwarded to the
+client. Errors are mapped to the Anthropic error envelope
+(`{"type":"error","error":{"type":...,"message":...}}`) with upstream JSON
+error bodies overriding the status-derived type.
+
+Both tracers of one request share an `X-LLM-Trace-ID` (also returned to the
+client as a response header); each stage records its own entry
+(`<trace-id>/<stage>`), so a Claude-format and an OpenAI-format capture of the
+same exchange are correlated. Captured `Authorization`/`X-Api-Key` headers are
+redacted before persistence.
+
+### Trace API
+
+- `GET /llm/traces?stage=claude&limit=50&offset=0` — newest-first summaries.
+- `GET /llm/traces/{id}` — full entry including bodies (base64 in JSON).
+
+## Build
+
+```
+go build ./cmd/caddy-llm
+```
+
+Or use [xcaddy](https://github.com/caddyserver/xcaddy):
+`xcaddy build --with github.com/ccat3z/caddy-llm`.
+
+## Testing
+
+```
+go test ./...
+```
+
+Golden tests replay real request logs from `../CLIProxyAPI/data/logs`
+(~30k recorded exchanges: original Claude request → forwarded OpenAI request,
+upstream response → client-facing response). When that directory is absent the
+golden tests skip. Controls:
+
+- `GOLDEN_SAMPLE=N` — number of files to test (default 300)
+- `GOLDEN_ALL=1` — test every file (~20k verified pairs, ~1 min)
+
+Package layout:
+
+```
+internal/translate/       pure translation library (no Caddy deps)
+internal/claudetoopenai/  claude2openai handler
+internal/tracer/          llm_tracer handler
+internal/tracestore/      llm.trace_store app + query API handler
+internal/llmtestutil/logparse/  CLIProxyAPI log-format parser (test fixture)
+internal/integration/     full-chain integration tests
+cmd/caddy-llm/            custom binary entry
+```
+
+## Status / limitations
+
+- Claude → OpenAI only (no Gemini, no OpenAI Responses dialect).
+- `count_tokens` is passed through, not answered locally.
+- No credential rotation — set the upstream `Authorization` header yourself
+  (e.g. via `header_up` on `reverse_proxy`).
