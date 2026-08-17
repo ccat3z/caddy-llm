@@ -266,8 +266,11 @@ var _ http.Flusher = (*responseWriter)(nil)
 func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error) {
 	var c Claude2OpenAI
 	for h.Next() {
+		// No positional args: a leading "/" token would be interpreted by the
+		// Caddyfile adapter as a path matcher, not an argument. Use the block
+		// form: claude2openai { upstream_path /v1/chat/completions }
 		if h.NextArg() {
-			c.UpstreamPath = h.Val()
+			return nil, h.ArgErr()
 		}
 		for h.NextBlock(0) {
 			switch h.Val() {

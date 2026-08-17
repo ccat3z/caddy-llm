@@ -27,9 +27,14 @@ the actual forwarding).
 api.example.com {
 	route {
 		trace claude              # capture client-facing (Claude) traffic
-		claude2openai            # Claude -> OpenAI
+		claude2openai {
+			# default /v1/chat/completions; set when the upstream base URL
+			# carries a path prefix
+			upstream_path /api/coding/paas/v4/chat/completions
+		}
 		trace openai              # capture upstream (OpenAI) traffic
 		reverse_proxy https://open.bigmodel.cn {
+			header_up Host open.bigmodel.cn
 			header_up Authorization "Bearer {$UPSTREAM_KEY}"
 		}
 	}
