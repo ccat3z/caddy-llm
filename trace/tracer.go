@@ -18,6 +18,9 @@ import (
 func init() {
 	caddy.RegisterModule(Tracer{})
 	httpcaddyfile.RegisterHandlerDirective("trace", parseCaddyfile)
+	// Let the directive be used outside route blocks (handle, site level);
+	// tracing wraps the rest of the exchange, so run it as early as possible.
+	httpcaddyfile.RegisterDirectiveOrder("trace", httpcaddyfile.Before, "rewrite")
 }
 
 // TraceIDHeader correlates the tracer stages of one client request.

@@ -46,15 +46,17 @@ func TestFullChainJSON(t *testing.T) {
 						"listen": []string{":8080"},
 						"routes": []any{
 							// JSON routes evaluate strictly in order (no
-							// Caddyfile-style matcher reordering), so the
-							// specific traces route must come first.
+							// Caddyfile-style matcher reordering), so specific
+							// routes must come before any catch-all.
 							map[string]any{
 								"match":  []any{map[string]any{"path": []string{"/llm/traces*"}}},
 								"handle": []any{map[string]any{"handler": "llm_tracer_api"}},
 							},
 							map[string]any{
+								"match": []any{map[string]any{"path": []string{"/v1/messages"}}},
 								"handle": []any{
 									map[string]any{"handler": "trace", "stage": "claude"},
+									map[string]any{"handler": "rewrite", "uri": "/v1/chat/completions"},
 									map[string]any{"handler": "claude2openai"},
 									map[string]any{"handler": "trace", "stage": "openai"},
 									map[string]any{

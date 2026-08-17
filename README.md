@@ -10,7 +10,7 @@ the actual forwarding).
 
 | Caddyfile directive | Module ID | What it does |
 |---|---|---|
-| `claude2openai` | `http.handlers.claude2openai` | Translates Anthropic `/v1/messages` requests to OpenAI chat-completions and translates responses (JSON and SSE) back. Forwarding is left to `reverse_proxy`. |
+| `claude2openai` | `http.handlers.claude2openai` | Translates Anthropic request/response bodies to OpenAI chat-completions and back. Path routing and upstream-path rewriting are left to route matchers and the `rewrite` handler; forwarding to `reverse_proxy`. |
 | `trace <stage>` | `http.handlers.trace` | Captures the request/response passing through it (both sides of a translation when chained) and records them to the trace store. |
 | `llm_tracer_api` | `http.handlers.llm_tracer_api` | HTTP query API for recorded traces. |
 | `llm_tracer` (global) | `llm_tracer` | Trace persistence: append-only `traces.jsonl` + in-memory index. |
@@ -25,23 +25,27 @@ the actual forwarding).
 }
 
 api.example.com {
-	route {
-		trace claude              # capture client-facing (Claude) traffic
-		claude2openai {
-			# default /v1/chat/completions; set when the upstream base URL
-			# carries a path prefix
-			upstream_path /api/coding/paas/v4/chat/completions
-		}
-		trace openai              # capture upstream (OpenAI) traffic
-		reverse_proxy https://open.bigmodel.cn {
-			header_up Host open.bigmodel.cn
-			header_up Authorization "Bearer {$UPSTREAM_KEY}"
+	# Only POST /v1/messages enters the translation chain; everything else
+	# (count_tokens, /v1/models, ...) never reaches it.
+	@claude path /v1/messages
+	handle @claude {
+		route {
+			trace claude
+			# Upstream path is the stock rewrite handler's job — set the full
+			# path when the upstream base URL carries a prefix.
+			rewrite * /v1/chat/completions
+			claude2openai
+			trace openai
+			reverse_proxy https://api.openai.com {
+				header_up Authorization "Bearer {$UPSTREAM_KEY}"
+			}
 		}
 	}
 
-	route /llm/traces* {
+	handle /llm/traces* {
 		llm_tracer_api
 	}
+	respond 404
 }
 ```
 

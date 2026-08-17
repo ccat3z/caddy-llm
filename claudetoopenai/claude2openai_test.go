@@ -23,10 +23,17 @@ func startProxy(t *testing.T, upstreamURL string) *caddytest.Tester {
 			http_port 8080
 		}
 		localhost:8080 {
-			route {
+			@claude path /v1/messages
+			handle @claude {
+				rewrite * /v1/chat/completions
 				claude2openai
 				reverse_proxy `+upstreamURL+`
 			}
+			# Anthropic sub-resources (count_tokens etc.) pass through unmanaged.
+			handle /v1/messages/* {
+				reverse_proxy `+upstreamURL+`
+			}
+			respond 404
 		}`, "caddyfile")
 	return tester
 }
@@ -157,7 +164,8 @@ func TestUpstreamErrorTranslation(t *testing.T) {
 	}
 }
 
-// TestCountTokensPassthrough: non-message-create paths are untouched.
+// TestCountTokensPassthrough: sub-resources like /v1/messages/count_tokens
+// are outside the matched route, so they reach the upstream untouched.
 func TestCountTokensPassthrough(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -169,6 +177,21 @@ func TestCountTokensPassthrough(t *testing.T) {
 	status, body := post(t, tester, "/v1/messages/count_tokens", `{"model":"m","messages":[{"role":"user","content":"x"}]}`)
 	if status != 200 || strings.TrimSpace(body) != `{"input_tokens":5}` {
 		t.Errorf("count_tokens passthrough broken: %d %s", status, body)
+	}
+}
+
+// TestUnmatchedPathNotProxied: paths outside the Claude matcher never reach
+// the upstream chain.
+func TestUnmatchedPathNotProxied(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("upstream should not be reached")
+	}))
+	defer upstream.Close()
+
+	tester := startProxy(t, upstream.URL)
+	status, _ := post(t, tester, "/v1/models", "")
+	if status != 404 {
+		t.Errorf("unmatched path status = %d, want 404", status)
 	}
 }
 

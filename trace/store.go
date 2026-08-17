@@ -29,6 +29,7 @@ func init() {
 	httpcaddyfile.RegisterGlobalOption("llm_tracer", parseGlobalOption)
 	caddy.RegisterModule(TraceAPI{})
 	httpcaddyfile.RegisterHandlerDirective("llm_tracer_api", parseTraceAPICaddyfile)
+	httpcaddyfile.RegisterDirectiveOrder("llm_tracer_api", httpcaddyfile.Before, "respond")
 }
 
 // Store is the tracer app: a caddy.App that persists trace entries to an

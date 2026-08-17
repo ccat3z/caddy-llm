@@ -41,15 +41,20 @@ func TestFullChain(t *testing.T) {
 			}
 		}
 		localhost:8080 {
-			route {
-				trace claude
-				claude2openai
-				trace openai
-				reverse_proxy %s
+			@claude path /v1/messages
+			handle @claude {
+				route {
+					trace claude
+					rewrite * /v1/chat/completions
+					claude2openai
+					trace openai
+					reverse_proxy %s
+				}
 			}
-			route /llm/traces* {
+			handle /llm/traces* {
 				llm_tracer_api
 			}
+			respond 404
 		}`, traceDir, upstream.URL), "caddyfile")
 
 	// Client request in Claude format.

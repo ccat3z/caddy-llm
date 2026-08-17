@@ -7,11 +7,9 @@ package claudetoopenai
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
@@ -24,15 +22,15 @@ import (
 func init() {
 	caddy.RegisterModule(Claude2OpenAI{})
 	httpcaddyfile.RegisterHandlerDirective("claude2openai", parseCaddyfile)
+	// Let the directive be used outside route blocks (handle, site level).
+	httpcaddyfile.RegisterDirectiveOrder("claude2openai", httpcaddyfile.Before, "reverse_proxy")
 }
 
 // Claude2OpenAI translates Anthropic /v1/messages requests to OpenAI
-// chat-completions and back.
+// chat-completions and back. It only rewrites the body and strips
+// Anthropic-specific headers; routing and upstream path rewriting belong to
+// route matchers and the rewrite handler.
 type Claude2OpenAI struct {
-	// UpstreamPath is the path forwarded to the upstream. Default:
-	// /v1/chat/completions.
-	UpstreamPath string `json:"upstream_path,omitempty"`
-
 	logger *zap.Logger
 }
 
@@ -47,9 +45,6 @@ func (Claude2OpenAI) CaddyModule() caddy.ModuleInfo {
 // Provision sets up the module.
 func (c *Claude2OpenAI) Provision(ctx caddy.Context) error {
 	c.logger = ctx.Logger()
-	if c.UpstreamPath == "" {
-		c.UpstreamPath = "/v1/chat/completions"
-	}
 	return nil
 }
 
@@ -59,8 +54,9 @@ var _ caddyhttp.MiddlewareHandler = (*Claude2OpenAI)(nil)
 const maxBodySize = 128 << 20 // 128MB request/response cap
 
 func (c *Claude2OpenAI) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
-	// Only translate message-create requests; everything else passes through.
-	if r.Method != http.MethodPost || !isMessagesPath(r.URL.Path) {
+	// Translation applies to every POST this handler is chained on; which
+	// paths reach it is the route matcher's decision. Non-POST passes through.
+	if r.Method != http.MethodPost {
 		return next.ServeHTTP(w, r)
 	}
 
@@ -93,8 +89,6 @@ func (c *Claude2OpenAI) ServeHTTP(w http.ResponseWriter, r *http.Request, next c
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Del("Anthropic-Version")
 	r.Header.Del("Anthropic-Beta")
-	r.URL.Path = c.UpstreamPath
-	r.URL.RawPath = ""
 
 	var rw *responseWriter
 	if req.Stream {
@@ -108,12 +102,6 @@ func (c *Claude2OpenAI) ServeHTTP(w http.ResponseWriter, r *http.Request, next c
 	}
 	rw.finish()
 	return nil
-}
-
-func isMessagesPath(path string) bool {
-	// Only message-create is translated; sub-resources (count_tokens, batches)
-	// belong to the Anthropic API and are passed through untouched.
-	return path == "/v1/messages"
 }
 
 // writeClaudeError writes an Anthropic-style error response without calling
@@ -266,26 +254,12 @@ var _ http.Flusher = (*responseWriter)(nil)
 func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error) {
 	var c Claude2OpenAI
 	for h.Next() {
-		// No positional args: a leading "/" token would be interpreted by the
-		// Caddyfile adapter as a path matcher, not an argument. Use the block
-		// form: claude2openai { upstream_path /v1/chat/completions }
+		// No arguments or blocks: a positional "/" token would be claimed by
+		// the Caddyfile adapter as a path matcher, and path rewriting belongs
+		// to the rewrite handler anyway.
 		if h.NextArg() {
 			return nil, h.ArgErr()
 		}
-		for h.NextBlock(0) {
-			switch h.Val() {
-			case "upstream_path":
-				if !h.NextArg() {
-					return nil, h.ArgErr()
-				}
-				c.UpstreamPath = h.Val()
-			default:
-				return nil, h.Errf("unknown subdirective %q", h.Val())
-			}
-		}
-	}
-	if c.UpstreamPath != "" && !strings.HasPrefix(c.UpstreamPath, "/") {
-		return nil, fmt.Errorf("upstream_path must start with /")
 	}
 	return &c, nil
 }
