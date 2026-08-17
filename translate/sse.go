@@ -12,15 +12,16 @@ type SSEEvent struct {
 	Data []byte // JSON payload
 }
 
-// Encode renders the event in SSE wire format.
+// Encode renders the event in SSE wire format:
+// "event: <name>\ndata: <json>\n\n".
 func (e SSEEvent) Encode() []byte {
 	var b bytes.Buffer
 	if e.Name != "" {
 		fmt.Fprintf(&b, "event: %s\n", e.Name)
 	}
+	b.WriteString("data: ")
 	b.Write(e.Data)
-	b.WriteByte('\n')
-	b.WriteByte('\n')
+	b.WriteString("\n\n")
 	return b.Bytes()
 }
 
