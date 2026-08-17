@@ -45,7 +45,7 @@ type Store struct {
 // CaddyModule returns the Caddy module information.
 func (Store) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
-		ID:  "llm.tracer",
+		ID:  "llm_tracer",
 		New: func() caddy.Module { return new(Store) },
 	}
 }
@@ -287,7 +287,7 @@ func (TraceAPI) CaddyModule() caddy.ModuleInfo {
 // Provision resolves the trace store app.
 func (t *TraceAPI) Provision(ctx caddy.Context) error {
 	t.logger = ctx.Logger()
-	appIface, err := ctx.App("llm.tracer")
+	appIface, err := ctx.App("llm_tracer")
 	if err != nil {
 		return fmt.Errorf("llm_traces_api requires the llm_tracer global option: %w", err)
 	}
@@ -362,7 +362,7 @@ func parseGlobalOption(d *caddyfile.Dispenser, _ any) (any, error) {
 		}
 	}
 	return httpcaddyfile.App{
-		Name:  "llm.tracer",
+		Name:  "llm_tracer",
 		Value: caddyconfig.JSON(app, nil),
 	}, nil
 }

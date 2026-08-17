@@ -47,7 +47,7 @@ func (Tracer) CaddyModule() caddy.ModuleInfo {
 // Provision resolves the trace store app.
 func (t *Tracer) Provision(ctx caddy.Context) error {
 	t.logger = ctx.Logger()
-	appIface, err := ctx.App("llm.tracer")
+	appIface, err := ctx.App("llm_tracer")
 	if err != nil {
 		return err
 	}
