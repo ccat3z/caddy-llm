@@ -42,9 +42,9 @@ func TestFullChain(t *testing.T) {
 		}
 		localhost:8080 {
 			route {
-				llm_tracer claude
+				trace claude
 				claude2openai
-				llm_tracer openai
+				trace openai
 				reverse_proxy %s
 			}
 			route /llm/traces* {

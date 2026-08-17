@@ -1,5 +1,5 @@
 // Package trace provides LLM request tracing for Caddy:
-// storage for LLM request traces written by llm_tracer handlers, plus an HTTP
+// storage for LLM request traces written by trace handlers, plus an HTTP
 // query API handler module.
 package trace
 

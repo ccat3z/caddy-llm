@@ -11,7 +11,7 @@ the actual forwarding).
 | Caddyfile directive | Module ID | What it does |
 |---|---|---|
 | `claude2openai` | `http.handlers.claude2openai` | Translates Anthropic `/v1/messages` requests to OpenAI chat-completions and translates responses (JSON and SSE) back. Forwarding is left to `reverse_proxy`. |
-| `llm_tracer <stage>` | `http.handlers.llm_tracer` | Captures the request/response passing through it (both sides of a translation when chained) and records them to the trace store. |
+| `trace <stage>` | `http.handlers.trace` | Captures the request/response passing through it (both sides of a translation when chained) and records them to the trace store. |
 | `llm_tracer_api` | `http.handlers.llm_tracer_api` | HTTP query API for recorded traces. |
 | `llm_tracer` (global) | `llm_tracer` | Trace persistence: append-only `traces.jsonl` + in-memory index. |
 
@@ -26,9 +26,9 @@ the actual forwarding).
 
 api.example.com {
 	route {
-		llm_tracer claude        # capture client-facing (Claude) traffic
+		trace claude              # capture client-facing (Claude) traffic
 		claude2openai            # Claude -> OpenAI
-		llm_tracer openai        # capture upstream (OpenAI) traffic
+		trace openai              # capture upstream (OpenAI) traffic
 		reverse_proxy https://open.bigmodel.cn {
 			header_up Authorization "Bearer {$UPSTREAM_KEY}"
 		}
@@ -47,7 +47,7 @@ to `POST /v1/messages` are translated and forwarded; sub-resources like
 ## How it works
 
 ```
-client ──Claude──▶ llm_tracer(claude) ──▶ claude2openai ──OpenAI──▶ llm_tracer(openai) ──▶ reverse_proxy ──▶ upstream
+client ──Claude──▶ trace(claude) ──▶ claude2openai ──OpenAI──▶ trace(openai) ──▶ reverse_proxy ──▶ upstream
                                          translates req/body/path,
                                          strips anthropic-* headers,
                                          sets GetBody (retry-safe)
@@ -107,7 +107,7 @@ Package layout:
 ```
 translate/                pure translation library (no Caddy deps)
 claudetoopenai/           claude2openai handler
-trace/                    llm_tracer handler + llm_tracer app + query API
+trace/                    trace handler + llm_tracer app + query API
 integration/              full-chain integration tests
 integration/cpa/      corpus replay tests, sanitized cases, and the
                           CLIProxyAPI log-format parser (logparse.go)

@@ -17,7 +17,7 @@ import (
 
 func init() {
 	caddy.RegisterModule(Tracer{})
-	httpcaddyfile.RegisterHandlerDirective("llm_tracer", parseCaddyfile)
+	httpcaddyfile.RegisterHandlerDirective("trace", parseCaddyfile)
 }
 
 // TraceIDHeader correlates the tracer stages of one client request.
@@ -39,7 +39,7 @@ type Tracer struct {
 // CaddyModule returns the Caddy module information.
 func (Tracer) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
-		ID:  "http.handlers.llm_tracer",
+		ID:  "http.handlers.trace",
 		New: func() caddy.Module { return &Tracer{} },
 	}
 }
