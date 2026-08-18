@@ -62,19 +62,9 @@ func (c *Claude2OpenAI) ServeHTTP(w http.ResponseWriter, r *http.Request, next c
 		return next.ServeHTTP(w, r)
 	}
 
-	// Prefer the body bytes cached by llm_route: the current clone's body
-	// when inside an llm_route subchain (model possibly rewritten), else the
-	// original; fall back to draining the body ourselves when standalone.
-	body, _ := caddyhttp.GetVar(r.Context(), "llm_cur_body").([]byte)
-	if body == nil {
-		body, _ = caddyhttp.GetVar(r.Context(), "llm_orig_body").([]byte)
-	}
-	if body == nil {
-		var err error
-		body, err = io.ReadAll(io.LimitReader(r.Body, maxBodySize))
-		if err != nil {
-			return c.writeClaudeError(w, http.StatusBadRequest, "invalid_request_error", "read request body: "+err.Error())
-		}
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodySize))
+	if err != nil {
+		return c.writeClaudeError(w, http.StatusBadRequest, "invalid_request_error", "read request body: "+err.Error())
 	}
 
 	var req translate.AnthropicRequest

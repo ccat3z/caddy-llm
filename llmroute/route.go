@@ -36,20 +36,6 @@ func init() {
 // (a failed upstream may have received a rewritten model name).
 const origModelVar = "llm_orig_model"
 
-// origBodyVar holds the original request body bytes, read exactly once by the
-// first llm_route in the chain. Everything downstream (later llm_route
-// blocks, claude2openai, trace) reuses these bytes instead of draining and
-// re-installing the one-shot request body.
-const origBodyVar = "llm_orig_body"
-
-// curBodyVar holds the body bytes of the clone currently being served by a
-// subchain (set before entering the subchain; differs from origBodyVar when
-// the model name was rewritten). Body-consuming handlers inside the subchain
-// (claude2openai) prefer it. It is per-request state on the shared context:
-// a fallback re-sets it before the next subchain runs, and the previous
-// clone is dead by then, so no interference.
-const curBodyVar = "llm_cur_body"
-
 // fallthroughStatuses are the upstream response codes that trigger
 // fallthrough to the next llm_route. 5xx is implied.
 func isFallthroughStatus(code int) bool {
@@ -123,12 +109,9 @@ func (r *Route) ServeHTTP(w http.ResponseWriter, req *http.Request, next caddyht
 	// Model selection: use the original model (stored by the first llm_route
 	// in the chain) so fallbacks match what the client asked for, not what a
 	// previous upstream received.
-	// The original body is read exactly once and cached in a var; every later
-	// consumer (fallback blocks, handlers like claude2openai) reuses the same
-	// bytes. bytes.Reader positions are independent, so sharing is safe.
-	origBody, _ := caddyhttp.GetVar(req.Context(), origBodyVar).([]byte)
-	modelStr, _ := caddyhttp.GetVar(req.Context(), origModelVar).(string)
-	if origBody == nil {
+	model := caddyhttp.GetVar(req.Context(), origModelVar)
+	modelStr, ok := model.(string)
+	if !ok || modelStr == "" {
 		if req.Method != http.MethodPost {
 			return next.ServeHTTP(w, req)
 		}
@@ -138,16 +121,11 @@ func (r *Route) ServeHTTP(w http.ResponseWriter, req *http.Request, next caddyht
 		}
 		modelStr = extractModel(body)
 		if modelStr == "" {
-			// Not a JSON body with a model field: restore and pass through.
-			resetBody(req, body)
 			return next.ServeHTTP(w, req)
 		}
-		origBody = body
-		caddyhttp.SetVar(req.Context(), origBodyVar, origBody)
 		caddyhttp.SetVar(req.Context(), origModelVar, modelStr)
-		// req.Body is now drained; nobody reads it again — but re-install it
-		// anyway so any handler outside this contract still sees a valid body.
-		resetBody(req, origBody)
+		// Restore the untouched body for whoever consumes it next.
+		resetBody(req, body)
 	}
 
 	rule, rewritten := r.match(modelStr)
@@ -156,25 +134,28 @@ func (r *Route) ServeHTTP(w http.ResponseWriter, req *http.Request, next caddyht
 		return next.ServeHTTP(w, req)
 	}
 
-	// Clone the request (headers/URL deep-copied). The clone shares the
-	// original body bytes unless the model name was rewritten; each
-	// bytes.Reader has its own cursor, and only one clone is ever active
-	// (fallback discards the previous one).
-	clone := cloneRequest(req)
-	var cloneBody []byte
-	if rewritten != modelStr {
-		cloneBody = rewriteModelField(origBody, rewritten)
-	} else {
-		cloneBody = origBody
+	// Clone the request (headers/URL deep-copied; body read into memory and
+	// re-installed independently on both) so this subchain's rewrites never
+	// leak to the next fallback candidate.
+	origBody, err := io.ReadAll(io.LimitReader(req.Body, maxBodySize))
+	if err != nil {
+		return next.ServeHTTP(w, req)
 	}
-	resetBody(clone, cloneBody)
-	caddyhttp.SetVar(req.Context(), curBodyVar, cloneBody)
+	resetBody(req, origBody) // original stays pristine for later fallbacks
+
+	clone := cloneRequest(req)
+	if rewritten != modelStr {
+		newBody := rewriteModelField(origBody, rewritten)
+		resetBody(clone, newBody)
+	} else {
+		resetBody(clone, origBody)
+	}
 
 	// Run the subchain (compiled with llm_route's own next as its tail, so
 	// unmatched inner routes fall through out of the subchain), peeking at
 	// the status to decide fallthrough.
 	pw := &peekWriter{ResponseWriter: w}
-	err := r.Sub.ServeHTTP(pw, clone, next)
+	err = r.Sub.ServeHTTP(pw, clone, next)
 
 	if err != nil || isFallthroughStatus(pw.status()) {
 		// Drain whatever the failing attempt still has in flight (keeps the
