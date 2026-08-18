@@ -12,6 +12,7 @@ the actual forwarding).
 |---|---|---|
 | `claude2openai` | `http.handlers.claude2openai` | Translates Anthropic request/response bodies to OpenAI chat-completions and back. Path routing and upstream-path rewriting are left to route matchers and the `rewrite` handler; forwarding to `reverse_proxy`. |
 | `trace <stage>` | `http.handlers.trace` | Captures the request/response passing through it (both sides of a translation when chained) and records them to the trace store. |
+| `llm_route` | `http.handlers.llm_route` | Model-based upstream routing with fallthrough: each block matches the request's model (literal or anchored regex with rewrite), runs its own subchain on a cloned request, and falls through to the next block on 429/404/5xx or subchain errors. |
 | `llm_tracer_api` | `http.handlers.llm_tracer_api` | HTTP query API for recorded traces. |
 | `llm_tracer` (global) | `llm_tracer` | Trace persistence: append-only `traces.jsonl` + in-memory index. |
 
@@ -93,6 +94,51 @@ with the same handler chain:
 Note: unlike the Caddyfile adapter, raw JSON routes match strictly in order —
 keep the `/llm/traces*` route (and any other matched routes) above the
 catch-all proxy route.
+
+## Multi-upstream routing (llm_route)
+
+Each upstream is one `llm_route` block; block order is the priority order:
+
+```caddyfile
+@claude path /v1/messages
+route @claude {
+	llm_route {
+		model mc/(.*) $1            # regex: strip the mc/ prefix
+		model glm-5.2               # literal: also serve the bare short name
+		route {
+			rewrite * /v2/chat
+			trace mc
+			reverse_proxy https://mcli.sankuai.com {
+				header_up Authorization "Bearer {$MC_KEY}"
+			}
+		}
+	}
+	llm_route {
+		model glm/(.*) $1
+		model glm-5.2
+		route {
+			rewrite * /api/coding/paas/v4/chat/completions
+			claude2openai            # this upstream speaks OpenAI
+			trace glm
+			reverse_proxy https://open.bigmodel.cn {
+				header_up Authorization "Bearer {$GLM_KEY}"
+			}
+		}
+	}
+	respond "model not found or all upstreams failed" 404
+}
+```
+
+Behavior:
+- The client's original model name is extracted once (first llm_route) and
+  reused, so fallbacks always match what the client asked for.
+- A matching rule may rewrite the model (regex with `$1` template) before the
+  subchain runs; the request is cloned, so nothing leaks between blocks.
+- Fallthrough happens when no rule matches, or the subchain answers 429/404/
+  5xx, or the subchain errors (dial failure). The next llm_route then sees
+  the pristine original request.
+- Put `trace <upstream-id>` inside each block: failed attempts keep their
+  response bodies in the trace store, so fallbacks are distinguishable.
 
 ## How it works
 

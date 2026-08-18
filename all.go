@@ -6,5 +6,6 @@ package caddy_llm
 
 import (
 	_ "github.com/ccat3z/caddy-llm/claudetoopenai"
+	_ "github.com/ccat3z/caddy-llm/llmroute"
 	_ "github.com/ccat3z/caddy-llm/trace"
 )
