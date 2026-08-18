@@ -6,10 +6,12 @@ package claudetoopenai
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
@@ -135,6 +137,7 @@ type responseWriter struct {
 
 	// streaming mode
 	feeder *translate.StreamFeeder
+	gz     *gzip.Reader // non-nil when the upstream stream is gzip-encoded
 }
 
 func newBufferedResponseWriter(w http.ResponseWriter, model string) *responseWriter {
@@ -161,6 +164,8 @@ func (rw *responseWriter) WriteHeader(status int) {
 	}
 	// Streaming 200: pass headers through with SSE content type.
 	h := rw.w.Header()
+	// We translate the body; deliver it uncompressed and say so.
+	h.Del("Content-Encoding")
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-cache")
 	rw.w.WriteHeader(status)
@@ -181,7 +186,47 @@ func (rw *responseWriter) Write(p []byte) (int, error) {
 }
 
 // writeStream converts upstream SSE incrementally, flushing per event.
+// Gzip-encoded upstream streams are decompressed on the fly.
 func (rw *responseWriter) writeStream(p []byte) (int, error) {
+	if strings.EqualFold(rw.w.Header().Get("Content-Encoding"), "gzip") {
+		if rw.gz == nil {
+			var err error
+			rw.gz, err = gzip.NewReader(bytes.NewReader(p))
+			if err != nil {
+				return len(p), nil // not usable gzip; drop
+			}
+			defer func() { /* reader kept across writes via MultiStream below */ }()
+			// decompress this chunk (gzip.Reader reads to EOF of member)
+			return rw.feedGzip()
+		}
+		if err := rw.gz.Reset(bytes.NewReader(p)); err != nil {
+			return len(p), nil
+		}
+		return rw.feedGzip()
+	}
+	return rw.feed(p)
+}
+
+// feedGzip drains the current gzip member into the converter.
+func (rw *responseWriter) feedGzip() (int, error) {
+	for {
+		buf := make([]byte, 4096)
+		n, err := rw.gz.Read(buf)
+		if n > 0 {
+			if _, ferr := rw.feed(buf[:n]); ferr != nil {
+				return 0, ferr
+			}
+		}
+		if err == io.EOF {
+			return 0, nil
+		}
+		if err != nil {
+			return 0, nil // corrupt stream; stop feeding
+		}
+	}
+}
+
+func (rw *responseWriter) feed(p []byte) (int, error) {
 	events, err := rw.feeder.Write(p)
 	if err != nil {
 		return 0, err
@@ -220,6 +265,13 @@ func (rw *responseWriter) finish() {
 		status = http.StatusOK
 	}
 	body := rw.buf.Bytes()
+	if strings.EqualFold(rw.w.Header().Get("Content-Encoding"), "gzip") {
+		if zr, err := gzip.NewReader(bytes.NewReader(body)); err == nil {
+			if plain, err := io.ReadAll(zr); err == nil {
+				body = plain
+			}
+		}
+	}
 	var out []byte
 	if status >= 200 && status < 300 && len(body) > 0 {
 		var resp translate.OpenAIResponse
@@ -233,6 +285,7 @@ func (rw *responseWriter) finish() {
 		out = translate.TranslateError(status, body)
 	}
 	h := rw.w.Header()
+	h.Del("Content-Encoding") // we translated the (decompressed) body
 	h.Set("Content-Type", "application/json")
 	h.Set("Content-Length", strconv.Itoa(len(out)))
 	rw.w.WriteHeader(status)
