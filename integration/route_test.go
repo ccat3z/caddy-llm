@@ -218,11 +218,16 @@ func TestLLMRoutePriorityAndFallthrough(t *testing.T) {
 // claude2openai) with an OpenAI upstream (claude2openai inside the block).
 func TestLLMRouteWithTranslation(t *testing.T) {
 	claudeUp := &upstreamLog{status: http.StatusOK}
+	var openaiSawModel string
 	openaiUp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
+		var obj map[string]any
+		json.Unmarshal(body, &obj)
+		if m, ok := obj["model"].(string); ok {
+			openaiSawModel = m
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"x","object":"chat.completion","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"translated-ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
-		_ = body
 	}))
 	claudeSrv := httptest.NewServer(claudeUp.handler())
 	defer claudeSrv.Close()
@@ -269,6 +274,11 @@ func TestLLMRouteWithTranslation(t *testing.T) {
 	}
 	if out["type"] != "message" {
 		t.Errorf("not translated: %s", body)
+	}
+
+	// The rewritten model name must survive claude2openai to the upstream.
+	if openaiSawModel != "glm-5.2" {
+		t.Errorf("openai upstream saw model %q, want rewritten glm-5.2", openaiSawModel)
 	}
 
 	// native-prefixed model bypasses translation (raw passthrough).
