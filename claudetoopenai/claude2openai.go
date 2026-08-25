@@ -158,7 +158,13 @@ func (rw *responseWriter) Header() http.Header { return rw.w.Header() }
 func (rw *responseWriter) WriteHeader(status int) {
 	rw.status = status
 	if status != http.StatusOK || !rw.stream {
-		// Errors and non-streaming responses are buffered for translation.
+		// Errors and non-streaming responses are buffered for translation;
+		// the real write happens in finish(). The status still must reach
+		// the wrapped writer for its decisions (llm_route's peekWriter
+		// observes it for fallthrough) — recorded without any real write.
+		if obs, ok := rw.w.(interface{ ObserveStatus(int) }); ok {
+			obs.ObserveStatus(status)
+		}
 		rw.buf.Reset()
 		return
 	}

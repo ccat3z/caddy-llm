@@ -327,6 +327,10 @@ type peekWriter struct {
 	headerSent bool
 	// discarded counts body bytes dropped after a fallthrough decision.
 	discarded int64
+	// held buffers body written while the header is still held back; it is
+	// flushed by flushHeader (streaming bodies never take this path: the
+	// status reaches WriteHeader directly and flushes immediately).
+	held [][]byte
 }
 
 func (pw *peekWriter) WriteHeader(code int) {
@@ -341,13 +345,29 @@ func (pw *peekWriter) WriteHeader(code int) {
 	pw.flushHeader()
 }
 
+// ObserveStatus records a status for fallthrough decisions WITHOUT going
+// through the real write path. Buffered translators use this so a later
+// Finish()/WriteHeader on the same stack doesn't double-write.
+func (pw *peekWriter) ObserveStatus(code int) {
+	if !pw.wroteHeader {
+		pw.wroteHeader = true
+		pw.code = code
+	}
+}
+
 func (pw *peekWriter) Write(p []byte) (int, error) {
 	if !pw.wroteHeader {
 		pw.WriteHeader(http.StatusOK)
 	}
 	if !pw.headerSent {
-		// fallthrough already decided: drop the body
-		pw.discarded += int64(len(p))
+		if pw.code != 0 && isFallthroughStatus(pw.code) {
+			// a fallthrough status was observed: drop the body
+			pw.discarded += int64(len(p))
+			return len(p), nil
+		}
+		// Header not yet flushed (e.g. observed via ObserveStatus): hold the
+		// body back; flushHeader writes it once the status is accepted.
+		pw.held = append(pw.held, p)
 		return len(p), nil
 	}
 	return pw.ResponseWriter.Write(p)
@@ -361,8 +381,18 @@ func (pw *peekWriter) flushHeader() {
 	if pw.headerSent || !pw.wroteHeader {
 		return
 	}
+	if isFallthroughStatus(pw.code) {
+		// The subchain finished without llm_route falling through (e.g. it
+		// handled the error itself): emit what we held back.
+		pw.held = nil
+		return
+	}
 	pw.headerSent = true
 	pw.ResponseWriter.WriteHeader(pw.code)
+	for _, b := range pw.held {
+		pw.ResponseWriter.Write(b)
+	}
+	pw.held = nil
 }
 
 // discard marks the response as dropped (fallthrough); already-buffered
