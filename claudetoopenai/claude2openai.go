@@ -65,32 +65,19 @@ func (c *Claude2OpenAI) ServeHTTP(w http.ResponseWriter, r *http.Request, next c
 
 	var req translate.AnthropicRequest
 	stream := false
+	model := ""
 	if jb, ok := r.Body.(*llmroute.Body); ok {
 		// llm_route already parsed the body: translate the object in place
 		// (before anyone reads the bytes). The wire form marshals on demand.
 		if jb.Readonly() {
 			return c.writeClaudeError(w, http.StatusInternalServerError, "api_error", "request body already consumed before translation")
 		}
-		raw, err := json.Marshal(jb.Obj)
-		if err != nil {
-			return c.writeClaudeError(w, http.StatusBadRequest, "invalid_request_error", "parse request body: "+err.Error())
-		}
-		if err := json.Unmarshal(raw, &req); err != nil {
-			return c.writeClaudeError(w, http.StatusBadRequest, "invalid_request_error", "parse request body: "+err.Error())
-		}
-		openaiReq, err := translate.TranslateRequest(&req)
+		stream, _ = jb.Obj["stream"].(bool)
+		model, _ = jb.Obj["model"].(string)
+		outMap, err := translate.TranslateRequestMap(jb.Obj)
 		if err != nil {
 			return c.writeClaudeError(w, http.StatusBadRequest, "invalid_request_error", "translate request: "+err.Error())
 		}
-		rawOut, err := json.Marshal(openaiReq)
-		if err != nil {
-			return c.writeClaudeError(w, http.StatusInternalServerError, "api_error", err.Error())
-		}
-		var outMap map[string]any
-		if err := json.Unmarshal(rawOut, &outMap); err != nil {
-			return c.writeClaudeError(w, http.StatusInternalServerError, "api_error", err.Error())
-		}
-		stream = req.Stream
 		jb.Obj = outMap
 	} else {
 		body, err := io.ReadAll(io.LimitReader(r.Body, maxBodySize))
@@ -116,6 +103,7 @@ func (c *Claude2OpenAI) ServeHTTP(w http.ResponseWriter, r *http.Request, next c
 			return io.NopCloser(bytes.NewReader(outBody)), nil
 		}
 		stream = req.Stream
+		model = req.Model
 	}
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Del("Anthropic-Version")
@@ -123,9 +111,9 @@ func (c *Claude2OpenAI) ServeHTTP(w http.ResponseWriter, r *http.Request, next c
 
 	var rw *responseWriter
 	if stream {
-		rw = newStreamResponseWriter(w, req.Model)
+		rw = newStreamResponseWriter(w, model)
 	} else {
-		rw = newBufferedResponseWriter(w, req.Model)
+		rw = newBufferedResponseWriter(w, model)
 	}
 	if err := next.ServeHTTP(rw, r); err != nil {
 		// Handler errors abort the chain; translate to a Claude error body.

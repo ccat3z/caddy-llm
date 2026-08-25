@@ -54,6 +54,20 @@ func jsonDiff(want, got any) []string {
 			}
 			return
 		}
+		// Embedded-JSON strings (tool-call arguments) are compared
+		// semantically: the map-native translate path re-encodes object
+		// keys (Go maps sort them), which changes byte order but not
+		// meaning.
+		if aStr, ok := a.(string); ok {
+			if bStr, ok := b.(string); ok {
+				var av, bv any
+				if json.Valid([]byte(aStr)) && json.Valid([]byte(bStr)) &&
+					json.Unmarshal([]byte(aStr), &av) == nil && json.Unmarshal([]byte(bStr), &bv) == nil &&
+					len(jsonDiff(av, bv)) == 0 {
+					return
+				}
+			}
+		}
 		diffs = append(diffs, fmt.Sprintf("%s:\n    want: %s\n     got: %s", path, trunc(string(mustMarshal(a))), trunc(string(mustMarshal(b)))))
 	}
 	walk("$", want, got)

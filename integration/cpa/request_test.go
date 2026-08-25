@@ -106,6 +106,22 @@ func TestCliProxyAPIRegressionRequest(t *testing.T) {
 			// max_tokens back to the client's before comparing.
 			golden := normalizeGoldenOverrides(lg.APIRequests[0].Body, &in)
 			assertJSONDiffEq(t, "translated request", golden, got)
+
+			// The map-native path must produce the same wire form (this is
+			// what the llmroute.Body fast path in claudetoopenai uses).
+			var inMap map[string]any
+			if err := json.Unmarshal(lg.RequestBody, &inMap); err != nil {
+				t.Skipf("unparseable client body (map): %v", err)
+			}
+			outMap, err := translate.TranslateRequestMap(inMap)
+			if err != nil {
+				t.Fatalf("translate.TranslateRequestMap: %v", err)
+			}
+			gotMap, err := json.Marshal(outMap)
+			if err != nil {
+				t.Fatalf("marshal map path: %v", err)
+			}
+			assertJSONDiffEq(t, "translated request (map path)", golden, gotMap)
 		})
 		ran++
 	}
