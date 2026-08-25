@@ -2,14 +2,13 @@ package llmroute
 
 import (
 	"bytes"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
 	"strings"
+	"testing"
 
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
-	"testing"
 )
 
 func TestMatch(t *testing.T) {
@@ -104,31 +103,6 @@ func TestPeekWriter(t *testing.T) {
 			t.Errorf("recorder = %d %q", rec.Code, rec.Body.String())
 		}
 	})
-}
-
-func TestRewriteModelField(t *testing.T) {
-	body := []byte(`{"model":"mc/glm-5.2","max_tokens":10,"messages":[{"role":"user","content":"hi"}],"stream":true}`)
-	out := rewriteModelField(body, "glm-5.2")
-	var obj map[string]any
-	if err := json.Unmarshal(out, &obj); err != nil {
-		t.Fatalf("unmarshal: %v (%s)", err, out)
-	}
-	if obj["model"] != "glm-5.2" {
-		t.Errorf("model = %v", obj["model"])
-	}
-	if obj["max_tokens"] != float64(10) || obj["stream"] != true {
-		t.Errorf("other fields lost: %v", obj)
-	}
-	// non-ASCII
-	out = rewriteModelField(body, "模型-中文名")
-	if !bytes.Contains(out, []byte("模型-中文名")) {
-		t.Errorf("non-ASCII model not written: %s", out)
-	}
-	// invalid JSON passthrough
-	bad := []byte(`not json`)
-	if got := rewriteModelField(bad, "x"); string(got) != "not json" {
-		t.Errorf("invalid body should pass through, got %q", got)
-	}
 }
 
 func TestExtractModel(t *testing.T) {

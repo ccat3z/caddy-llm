@@ -18,6 +18,7 @@ import (
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"go.uber.org/zap"
 
+	"github.com/ccat3z/caddy-llm/llmroute"
 	"github.com/ccat3z/caddy-llm/translate"
 )
 
@@ -62,38 +63,66 @@ func (c *Claude2OpenAI) ServeHTTP(w http.ResponseWriter, r *http.Request, next c
 		return next.ServeHTTP(w, r)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodySize))
-	if err != nil {
-		return c.writeClaudeError(w, http.StatusBadRequest, "invalid_request_error", "read request body: "+err.Error())
-	}
-
 	var req translate.AnthropicRequest
-	if err := json.Unmarshal(body, &req); err != nil {
-		return c.writeClaudeError(w, http.StatusBadRequest, "invalid_request_error", "parse request body: "+err.Error())
-	}
-
-	openaiReq, err := translate.TranslateRequest(&req)
-	if err != nil {
-		return c.writeClaudeError(w, http.StatusBadRequest, "invalid_request_error", "translate request: "+err.Error())
-	}
-	outBody, err := json.Marshal(openaiReq)
-	if err != nil {
-		return c.writeClaudeError(w, http.StatusInternalServerError, "api_error", err.Error())
-	}
-
-	// Replace the request for downstream handlers (reverse_proxy).
-	r.Body = io.NopCloser(bytes.NewReader(outBody))
-	r.ContentLength = int64(len(outBody))
-	r.Header.Set("Content-Length", strconv.Itoa(len(outBody)))
-	r.GetBody = func() (io.ReadCloser, error) {
-		return io.NopCloser(bytes.NewReader(outBody)), nil
+	stream := false
+	if jb, ok := r.Body.(*llmroute.Body); ok {
+		// llm_route already parsed the body: translate the object in place
+		// (before anyone reads the bytes). The wire form marshals on demand.
+		if jb.Readonly() {
+			return c.writeClaudeError(w, http.StatusInternalServerError, "api_error", "request body already consumed before translation")
+		}
+		raw, err := json.Marshal(jb.Obj)
+		if err != nil {
+			return c.writeClaudeError(w, http.StatusBadRequest, "invalid_request_error", "parse request body: "+err.Error())
+		}
+		if err := json.Unmarshal(raw, &req); err != nil {
+			return c.writeClaudeError(w, http.StatusBadRequest, "invalid_request_error", "parse request body: "+err.Error())
+		}
+		openaiReq, err := translate.TranslateRequest(&req)
+		if err != nil {
+			return c.writeClaudeError(w, http.StatusBadRequest, "invalid_request_error", "translate request: "+err.Error())
+		}
+		rawOut, err := json.Marshal(openaiReq)
+		if err != nil {
+			return c.writeClaudeError(w, http.StatusInternalServerError, "api_error", err.Error())
+		}
+		var outMap map[string]any
+		if err := json.Unmarshal(rawOut, &outMap); err != nil {
+			return c.writeClaudeError(w, http.StatusInternalServerError, "api_error", err.Error())
+		}
+		stream = req.Stream
+		jb.Obj = outMap
+	} else {
+		body, err := io.ReadAll(io.LimitReader(r.Body, maxBodySize))
+		if err != nil {
+			return c.writeClaudeError(w, http.StatusBadRequest, "invalid_request_error", "read request body: "+err.Error())
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			return c.writeClaudeError(w, http.StatusBadRequest, "invalid_request_error", "parse request body: "+err.Error())
+		}
+		openaiReq, err := translate.TranslateRequest(&req)
+		if err != nil {
+			return c.writeClaudeError(w, http.StatusBadRequest, "invalid_request_error", "translate request: "+err.Error())
+		}
+		outBody, err := json.Marshal(openaiReq)
+		if err != nil {
+			return c.writeClaudeError(w, http.StatusInternalServerError, "api_error", err.Error())
+		}
+		// Replace the request for downstream handlers (reverse_proxy).
+		r.Body = io.NopCloser(bytes.NewReader(outBody))
+		r.ContentLength = int64(len(outBody))
+		r.Header.Set("Content-Length", strconv.Itoa(len(outBody)))
+		r.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(outBody)), nil
+		}
+		stream = req.Stream
 	}
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Del("Anthropic-Version")
 	r.Header.Del("Anthropic-Beta")
 
 	var rw *responseWriter
-	if req.Stream {
+	if stream {
 		rw = newStreamResponseWriter(w, req.Model)
 	} else {
 		rw = newBufferedResponseWriter(w, req.Model)
@@ -170,8 +199,12 @@ func (rw *responseWriter) WriteHeader(status int) {
 	}
 	// Streaming 200: pass headers through with SSE content type.
 	h := rw.w.Header()
-	// We translate the body; deliver it uncompressed and say so.
+	// We translate the body; deliver it uncompressed and say so. Length is
+	// unknown up front (and a fallthrough attempt may have left a stale
+	// Content-Length from an earlier upstream error in the shared header
+	// map), so drop both length headers and stream.
 	h.Del("Content-Encoding")
+	h.Del("Content-Length")
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-cache")
 	rw.w.WriteHeader(status)
@@ -179,6 +212,8 @@ func (rw *responseWriter) WriteHeader(status int) {
 }
 
 func (rw *responseWriter) Write(p []byte) (int, error) {
+
+
 	if rw.stream && rw.status == http.StatusOK {
 		return rw.writeStream(p)
 	}

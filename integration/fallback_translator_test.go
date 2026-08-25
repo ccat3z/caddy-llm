@@ -14,9 +14,10 @@ import (
 	_ "github.com/ccat3z/caddy-llm"
 )
 
-// TestFallbackWithTranslator: primary block has rewrite_body{claude2openai}
-// and fails 404; fallback must still serve. This is the pipeline-form twin of
-// the plain fallthrough tests.
+// TestFallbackWithTranslator: primary block has claude2openai in its subchain
+// and fails 404; fallback must still serve. Regression lock for the
+// buffered-translator status swallowing (fixed via peekWriter.ObserveStatus +
+// held-body buffering).
 func TestFallbackWithTranslator(t *testing.T) {
 	var primaryHits, fallbackHits atomic.Int64
 	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -44,19 +45,15 @@ func TestFallbackWithTranslator(t *testing.T) {
 		route @claude {
 			llm_route {
 				model glm-5.2
-				rewrite_body {
-					claude2openai
-				}
 				route {
+					claude2openai
 					reverse_proxy %s
 				}
 			}
 			llm_route {
 				model glm-5.2
-				rewrite_body {
-					claude2openai
-				}
 				route {
+					claude2openai
 					reverse_proxy %s
 				}
 			}

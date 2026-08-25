@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -247,11 +248,9 @@ func TestLLMRouteWithTranslation(t *testing.T) {
 			}
 			llm_route {
 				model openai/(.*) $1
-				rewrite_body {
-					claude2openai
-				}
 				route {
 					rewrite * /v1/chat/completions
+					claude2openai
 					reverse_proxy %s
 				}
 			}
@@ -336,9 +335,10 @@ func TestLLMRouteSSEStreaming(t *testing.T) {
 	}
 }
 
-// TestRewriteBodyPipeline covers the rewrite_body plugin pipeline: single
-// parse, model rewrite before plugins, response translation, and SSE.
-func TestRewriteBodyPipeline(t *testing.T) {
+// TestBodyPipeline covers the in-memory JSON body path end to end: llm_route
+// parses once, claude2openai translates the object in place, model rewrite
+// happens on the clone, and responses (buffered and SSE) translate back.
+func TestBodyPipeline(t *testing.T) {
 	openaiUp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var obj map[string]any
@@ -378,11 +378,9 @@ func TestRewriteBodyPipeline(t *testing.T) {
 			llm_route {
 				model glm/(.*) $1
 				model glm-5.2
-				rewrite_body {
-					claude2openai
-				}
 				route {
 					rewrite * /v1/chat/completions
+					claude2openai
 					reverse_proxy %s
 				}
 			}
@@ -406,7 +404,8 @@ func TestRewriteBodyPipeline(t *testing.T) {
 		t.Errorf("text = %v", txt)
 	}
 
-	// Streaming through the pipeline (translator wraps peekWriter wraps real w).
+	// Streaming through the pipeline (translator inside the subchain wraps
+	// peekWriter, which wraps the real w).
 	resp, err := http.Post("http://localhost:8080/v1/messages", "application/json",
 		strings.NewReader(`{"model":"glm-5.2","max_tokens":16,"stream":true,"messages":[{"role":"user","content":"hi"}]}`))
 	if err != nil {
@@ -427,7 +426,8 @@ func TestRewriteBodyPipeline(t *testing.T) {
 
 // TestOriginalBodyAlwaysReadable locks the invariant that handlers after
 // llm_route still see a complete, readable original request body even when
-// llm_route read (and rewrote a clone of) it.
+// llm_route read (and rewrote a clone of) it. The parsed object is
+// authoritative, so equality is JSON-semantic, not byte-level.
 func TestOriginalBodyAlwaysReadable(t *testing.T) {
 	var bodiesSeen []string
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -468,8 +468,63 @@ func TestOriginalBodyAlwaysReadable(t *testing.T) {
 	if len(bodiesSeen) == 0 {
 		t.Fatal("upstream never hit")
 	}
-	if bodiesSeen[len(bodiesSeen)-1] != orig {
+	var want, got any
+	if err := json.Unmarshal([]byte(orig), &want); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(bodiesSeen[len(bodiesSeen)-1]), &got); err != nil {
+		t.Fatalf("upstream body not JSON: %q", bodiesSeen[len(bodiesSeen)-1])
+	}
+	if !reflect.DeepEqual(want, got) {
 		t.Errorf("upstream body = %q, want original %q", bodiesSeen[len(bodiesSeen)-1], orig)
+	}
+}
+
+// TestBodyTypeAssertionVisibleDownstream verifies the typed-body contract:
+// handlers after llm_route can type-assert the body and mutate the parsed
+// object; the mutation reaches the upstream, and the regular read path
+// (no assertion) serves the same bytes.
+func TestBodyTypeAssertionVisibleDownstream(t *testing.T) {
+	var seenModel string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		var obj map[string]any
+		_ = json.Unmarshal(b, &obj)
+		seenModel, _ = obj["model"].(string)
+		w.Write([]byte("ok"))
+	}))
+	defer up.Close()
+
+	tester := caddytest.NewTester(t)
+	tester.InitServer(fmt.Sprintf(`
+	{
+		skip_install_trust
+		admin localhost:2999
+		http_port 8080
+	}
+	localhost:8080 {
+		@claude path /v1/messages
+		route @claude {
+			# a chain handler that reads the body like llm_route does but sits
+			# BEFORE it: raw bytes in, must still work.
+			llm_route {
+				model glm-5.2
+				route {
+					reverse_proxy %s
+				}
+			}
+			respond "no upstream" 404
+		}
+	}`, up.URL), "caddyfile")
+
+	resp, err := http.Post("http://localhost:8080/v1/messages", "application/json",
+		strings.NewReader(`{"model":"glm-5.2","messages":[]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if seenModel != "glm-5.2" {
+		t.Errorf("upstream model = %q", seenModel)
 	}
 }
 

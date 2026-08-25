@@ -116,11 +116,9 @@ route @claude {
 	llm_route {
 		model glm/(.*) $1
 		model glm-5.2
-		rewrite_body {              # this upstream speaks OpenAI
-			claude2openai
-		}
-		route {
+		route {                    # this upstream speaks OpenAI
 			rewrite * /api/coding/paas/v4/chat/completions
+			claude2openai
 			trace glm
 			reverse_proxy https://open.bigmodel.cn {
 				header_up Authorization "Bearer {$GLM_KEY}"
@@ -132,11 +130,12 @@ route @claude {
 ```
 
 Behavior:
-- The body is read and parsed exactly once per request. The original model
-  name is cached (first llm_route) so fallbacks always match what the client
-  asked for; the original body stays readable for any downstream handler.
-- A matching rule rewrites the model name (regex with `$1` template) before
-  the `rewrite_body` plugins run. The request is cloned, so nothing leaks
+- The body is read and parsed exactly once per request, then carried as an
+  in-memory JSON body (`llmroute.Body`, see below). The original model name
+  is cached (first llm_route) so fallbacks always match what the client asked
+  for; the original body stays readable for any downstream handler.
+- A matching rule rewrites the model name (regex with `$1` template) on a
+  deep copy of the parsed object. The request is cloned, so nothing leaks
   between blocks.
 - Fallthrough happens when no rule matches, or the subchain answers 429/404/
   5xx, or the subchain errors (dial failure). The next llm_route then sees
@@ -144,15 +143,17 @@ Behavior:
 - Put `trace <upstream-id>` inside each block: failed attempts keep their
   response bodies in the trace store, so fallbacks are distinguishable.
 
-### rewrite_body plugins
+### Programmatic body access
 
-`rewrite_body { ... }` lists body-rewriting plugins (modules in the
-`http.handlers.llm_rewriter` namespace). The parsed JSON request body flows
-through them in order; the first plugin that provides a response translator
-(e.g. `claude2openai`, which translates OpenAI responses back to Claude
-format — streaming, buffered, gzip-aware) handles the response side.
-`claude2openai` also remains usable as a plain handler inside `route` for
-chains without llm_route.
+After the first llm_route, `request.Body` is a `*llmroute.Body`: the parsed
+JSON object (`Body.Obj`, a `map[string]any`) is the authoritative body.
+Handlers in the chain can type-assert it and read or mutate the object
+directly — no byte reads, no re-parsing (`claude2openai` and `trace` both
+use this). Regular `io.ReadCloser` consumption keeps working: the bytes are
+marshaled from the object once, on first read. After that the bytes are
+frozen — check `Body.Readonly()` before mutating `Obj`. Since the length is
+only known at marshal time, requests are sent chunked (`ContentLength` -1)
+with `GetBody` serving retries from the frozen bytes.
 
 ## How it works
 

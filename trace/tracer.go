@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strconv"
@@ -13,6 +14,8 @@ import (
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"go.uber.org/zap"
+
+	"github.com/ccat3z/caddy-llm/llmroute"
 )
 
 func init() {
@@ -84,7 +87,15 @@ func (t *Tracer) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 	// Capture the request body while keeping it readable downstream.
 	var reqBuf bytes.Buffer
 	reqTrunc := false
-	if r.Body != nil {
+	if jb, ok := r.Body.(*llmroute.Body); ok {
+		// llm_route's parsed body: snapshot the object without touching
+		// r.Body, so downstream handlers keep the type to assert against.
+		raw, err := json.Marshal(jb.Obj)
+		if err != nil {
+			return err
+		}
+		reqBuf.Write(raw)
+	} else if r.Body != nil {
 		body, err := io.ReadAll(io.LimitReader(r.Body, maxCapture+1))
 		if err != nil {
 			return err
@@ -148,6 +159,18 @@ type teeResponseWriter struct {
 func (w *teeResponseWriter) WriteHeader(status int) {
 	w.status = status
 	w.ResponseWriter.WriteHeader(status)
+}
+
+// ObserveStatus forwards status observations (e.g. claude2openai's buffered
+// translator reporting an upstream error for llm_route's fallthrough
+// decision) through the tee, so wrappers further out still see them.
+func (w *teeResponseWriter) ObserveStatus(code int) {
+	if w.status == 0 {
+		w.status = code
+	}
+	if obs, ok := w.ResponseWriter.(interface{ ObserveStatus(int) }); ok {
+		obs.ObserveStatus(code)
+	}
 }
 
 func (w *teeResponseWriter) Write(p []byte) (int, error) {
