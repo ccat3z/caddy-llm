@@ -247,9 +247,11 @@ func TestLLMRouteWithTranslation(t *testing.T) {
 			}
 			llm_route {
 				model openai/(.*) $1
+				rewrite_body {
+					claude2openai
+				}
 				route {
 					rewrite * /v1/chat/completions
-					claude2openai
 					reverse_proxy %s
 				}
 			}
@@ -332,4 +334,188 @@ func TestLLMRouteSSEStreaming(t *testing.T) {
 			t.Errorf("stream missing %q; got %q", want, got)
 		}
 	}
+}
+
+// TestRewriteBodyPipeline covers the rewrite_body plugin pipeline: single
+// parse, model rewrite before plugins, response translation, and SSE.
+func TestRewriteBodyPipeline(t *testing.T) {
+	openaiUp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var obj map[string]any
+		json.Unmarshal(body, &obj)
+		if obj["model"] != "glm-5.2" {
+			t.Errorf("upstream saw model %v, want rewritten glm-5.2", obj["model"])
+		}
+		// Streaming upstream response.
+		if stream, _ := obj["stream"].(bool); stream {
+			w.Header().Set("Content-Type", "text/event-stream")
+			fl := w.(http.Flusher)
+			for _, chunk := range []string{
+				`data: {"id":"s1","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"content":"Hel"}}]}` + "\n\n",
+				`data: {"id":"s1","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"content":"lo"}}]}` + "\n\n",
+				"data: [DONE]\n\n",
+			} {
+				io.WriteString(w, chunk)
+				fl.Flush()
+			}
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"x","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"pipe-ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer openaiUp.Close()
+
+	tester := caddytest.NewTester(t)
+	tester.InitServer(fmt.Sprintf(`
+	{
+		skip_install_trust
+		admin localhost:2999
+		http_port 8080
+	}
+	localhost:8080 {
+		@claude path /v1/messages
+		route @claude {
+			llm_route {
+				model glm/(.*) $1
+				model glm-5.2
+				rewrite_body {
+					claude2openai
+				}
+				route {
+					rewrite * /v1/chat/completions
+					reverse_proxy %s
+				}
+			}
+			respond "no upstream" 404
+		}
+	}`, openaiUp.URL), "caddyfile")
+
+	// Non-streaming through the pipeline.
+	status, body := postModel(t, "glm/glm-5.2")
+	if status != 200 {
+		t.Fatalf("status = %d body=%s", status, body)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(body), &out); err != nil {
+		t.Fatalf("body: %v (%s)", err, body)
+	}
+	if out["type"] != "message" {
+		t.Errorf("not translated: %s", body)
+	}
+	if txt := out["content"].([]any)[0].(map[string]any)["text"]; txt != "pipe-ok" {
+		t.Errorf("text = %v", txt)
+	}
+
+	// Streaming through the pipeline (translator wraps peekWriter wraps real w).
+	resp, err := http.Post("http://localhost:8080/v1/messages", "application/json",
+		strings.NewReader(`{"model":"glm-5.2","max_tokens":16,"stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("stream status = %d", resp.StatusCode)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	got := string(b)
+	for _, want := range []string{"event: message_start", `"text":"Hel"`, `"text":"lo"`, "event: message_stop"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("stream missing %q: %s", want, got[:min(200, len(got))])
+		}
+	}
+}
+
+// TestOriginalBodyAlwaysReadable locks the invariant that handlers after
+// llm_route still see a complete, readable original request body even when
+// llm_route read (and rewrote a clone of) it.
+func TestOriginalBodyAlwaysReadable(t *testing.T) {
+	var bodiesSeen []string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		bodiesSeen = append(bodiesSeen, string(b))
+		w.Write([]byte("ok"))
+	}))
+	defer up.Close()
+
+	tester := caddytest.NewTester(t)
+	tester.InitServer(fmt.Sprintf(`
+	{
+		skip_install_trust
+		admin localhost:2999
+		http_port 8080
+	}
+	localhost:8080 {
+		@claude path /v1/messages
+		route @claude {
+			llm_route {
+				model glm-5.2
+				route {
+					# a "user middleware" that reads the body before proxying
+					vars dummy after-llm-route
+					reverse_proxy %s
+				}
+			}
+			respond "no upstream" 404
+		}
+	}`, up.URL), "caddyfile")
+
+	orig := `{"model":"glm-5.2","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`
+	resp, err := http.Post("http://localhost:8080/v1/messages", "application/json", strings.NewReader(orig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if len(bodiesSeen) == 0 {
+		t.Fatal("upstream never hit")
+	}
+	if bodiesSeen[len(bodiesSeen)-1] != orig {
+		t.Errorf("upstream body = %q, want original %q", bodiesSeen[len(bodiesSeen)-1], orig)
+	}
+}
+
+// TestLegacyClaude2openaiHandlerForm keeps the old shape working: claude2openai
+// as a handler inside the subchain (not rewrite_body).
+func TestLegacyClaude2openaiHandlerForm(t *testing.T) {
+	openaiUp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"x","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"legacy-ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer openaiUp.Close()
+
+	tester := caddytest.NewTester(t)
+	tester.InitServer(fmt.Sprintf(`
+	{
+		skip_install_trust
+		admin localhost:2999
+		http_port 8080
+	}
+	localhost:8080 {
+		@claude path /v1/messages
+		route @claude {
+			llm_route {
+				model glm-5.2
+				route {
+					rewrite * /v1/chat/completions
+					claude2openai
+					reverse_proxy %s
+				}
+			}
+			respond "no upstream" 404
+		}
+	}`, openaiUp.URL), "caddyfile")
+
+	status, body := postModel(t, "glm-5.2")
+	if status != 200 {
+		t.Fatalf("status = %d", status)
+	}
+	if !strings.Contains(body, `"text":"legacy-ok"`) {
+		t.Errorf("body = %s", body)
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

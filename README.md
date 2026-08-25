@@ -105,7 +105,7 @@ route @claude {
 	llm_route {
 		model mc/(.*) $1            # regex: strip the mc/ prefix
 		model glm-5.2               # literal: also serve the bare short name
-		route {
+		route {                     # Claude-native upstream: no rewriting
 			rewrite * /v2/chat
 			trace mc
 			reverse_proxy https://mcli.sankuai.com {
@@ -116,9 +116,11 @@ route @claude {
 	llm_route {
 		model glm/(.*) $1
 		model glm-5.2
+		rewrite_body {              # this upstream speaks OpenAI
+			claude2openai
+		}
 		route {
 			rewrite * /api/coding/paas/v4/chat/completions
-			claude2openai            # this upstream speaks OpenAI
 			trace glm
 			reverse_proxy https://open.bigmodel.cn {
 				header_up Authorization "Bearer {$GLM_KEY}"
@@ -130,15 +132,27 @@ route @claude {
 ```
 
 Behavior:
-- The client's original model name is extracted once (first llm_route) and
-  reused, so fallbacks always match what the client asked for.
-- A matching rule may rewrite the model (regex with `$1` template) before the
-  subchain runs; the request is cloned, so nothing leaks between blocks.
+- The body is read and parsed exactly once per request. The original model
+  name is cached (first llm_route) so fallbacks always match what the client
+  asked for; the original body stays readable for any downstream handler.
+- A matching rule rewrites the model name (regex with `$1` template) before
+  the `rewrite_body` plugins run. The request is cloned, so nothing leaks
+  between blocks.
 - Fallthrough happens when no rule matches, or the subchain answers 429/404/
   5xx, or the subchain errors (dial failure). The next llm_route then sees
   the pristine original request.
 - Put `trace <upstream-id>` inside each block: failed attempts keep their
   response bodies in the trace store, so fallbacks are distinguishable.
+
+### rewrite_body plugins
+
+`rewrite_body { ... }` lists body-rewriting plugins (modules in the
+`http.handlers.llm_rewriter` namespace). The parsed JSON request body flows
+through them in order; the first plugin that provides a response translator
+(e.g. `claude2openai`, which translates OpenAI responses back to Claude
+format — streaming, buffered, gzip-aware) handles the response side.
+`claude2openai` also remains usable as a plain handler inside `route` for
+chains without llm_route.
 
 ## How it works
 

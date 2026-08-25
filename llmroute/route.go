@@ -36,6 +36,11 @@ func init() {
 // (a failed upstream may have received a rewritten model name).
 const origModelVar = "llm_orig_model"
 
+// origBodyVar holds the original request body bytes, read exactly once by
+// the first llm_route in the chain. Fallback blocks clone from these bytes
+// instead of draining the one-shot request body again.
+const origBodyVar = "llm_orig_body"
+
 // fallthroughStatuses are the upstream response codes that trigger
 // fallthrough to the next llm_route. 5xx is implied.
 func isFallthroughStatus(code int) bool {
@@ -56,7 +61,13 @@ type Route struct {
 	// matches. Any HTTP routes/handlers may be used.
 	Sub *caddyhttp.Subroute `json:"sub,omitempty"`
 
-	logger *zap.Logger `json:"-"`
+	// RewritersRaw is the rewrite_body pipeline: modules in the
+	// http.handlers.llm_rewriter namespace that transform the parsed request
+	// body (and may provide response translation) before the subchain runs.
+	RewritersRaw []json.RawMessage `json:"rewrite_body,omitempty" caddy:"namespace=http.handlers.llm_rewriter inline_key=rewriter"`
+
+	rewriters []BodyRewriter `json:"-"`
+	logger    *zap.Logger    `json:"-"`
 }
 
 // ModelRule matches the client model name and optionally rewrites it.
@@ -97,6 +108,19 @@ func (r *Route) Provision(ctx caddy.Context) error {
 			return fmt.Errorf("provisioning llm_route subchain: %v", err)
 		}
 	}
+	if r.RewritersRaw != nil {
+		mods, err := ctx.LoadModule(r, "RewritersRaw")
+		if err != nil {
+			return fmt.Errorf("loading rewrite_body rewriters: %v", err)
+		}
+		for _, m := range mods.([]any) {
+			rw, ok := m.(BodyRewriter)
+			if !ok {
+				return fmt.Errorf("rewrite_body module %T does not implement BodyRewriter", m)
+			}
+			r.rewriters = append(r.rewriters, rw)
+		}
+	}
 	return nil
 }
 
@@ -106,12 +130,14 @@ var _ caddyhttp.MiddlewareHandler = (*Route)(nil)
 const maxBodySize = 128 << 20 // 128MB
 
 func (r *Route) ServeHTTP(w http.ResponseWriter, req *http.Request, next caddyhttp.Handler) error {
-	// Model selection: use the original model (stored by the first llm_route
-	// in the chain) so fallbacks match what the client asked for, not what a
-	// previous upstream received.
-	model := caddyhttp.GetVar(req.Context(), origModelVar)
-	modelStr, ok := model.(string)
-	if !ok || modelStr == "" {
+	// The body is read and parsed exactly once per request, here. Later
+	// llm_route blocks reuse the cached original model name; the raw original
+	// body is kept in a var so fallback blocks never re-read the (drained)
+	// request body. The original request always gets its body re-installed —
+	// downstream handlers must never see a drained body.
+	modelStr, _ := caddyhttp.GetVar(req.Context(), origModelVar).(string)
+	origBody, haveBody := caddyhttp.GetVar(req.Context(), origBodyVar).([]byte)
+	if !haveBody {
 		if req.Method != http.MethodPost {
 			return next.ServeHTTP(w, req)
 		}
@@ -119,13 +145,15 @@ func (r *Route) ServeHTTP(w http.ResponseWriter, req *http.Request, next caddyht
 		if err != nil || len(body) == 0 {
 			return next.ServeHTTP(w, req)
 		}
+		// Restore for any non-llm_route consumer downstream.
+		resetBody(req, body)
 		modelStr = extractModel(body)
 		if modelStr == "" {
 			return next.ServeHTTP(w, req)
 		}
+		origBody = body
+		caddyhttp.SetVar(req.Context(), origBodyVar, origBody)
 		caddyhttp.SetVar(req.Context(), origModelVar, modelStr)
-		// Restore the untouched body for whoever consumes it next.
-		resetBody(req, body)
 	}
 
 	rule, rewritten := r.match(modelStr)
@@ -134,36 +162,68 @@ func (r *Route) ServeHTTP(w http.ResponseWriter, req *http.Request, next caddyht
 		return next.ServeHTTP(w, req)
 	}
 
-	// Clone the request (headers/URL deep-copied; body read into memory and
-	// re-installed independently on both) so this subchain's rewrites never
-	// leak to the next fallback candidate.
-	origBody, err := io.ReadAll(io.LimitReader(req.Body, maxBodySize))
-	if err != nil {
-		return next.ServeHTTP(w, req)
+	// Build the clone's body: parse once, apply the model rewrite (built-in
+	// step) and the rewrite_body pipeline on the parsed object, then marshal
+	// once. Blocks with no rewriting at all share the original bytes.
+	cloneBody := origBody
+	var translator ResponseTranslator
+	if len(r.rewriters) > 0 || rewritten != modelStr {
+		var obj map[string]any
+		if err := json.Unmarshal(origBody, &obj); err != nil {
+			// Not a JSON object: pass through untouched.
+			r.logger.Warn("rewrite_body: body is not a JSON object; passing through", zap.Error(err))
+		} else {
+			body := obj
+			if rewritten != modelStr {
+				body["model"] = rewritten
+			}
+			stream, _ := body["stream"].(bool)
+			for _, rw := range r.rewriters {
+				nb, err := rw.RewriteRequest(rewritten, body)
+				if err != nil {
+					r.logger.Error("rewrite_body: rewriter failed; passing through", zap.Error(err))
+					break
+				}
+				body = nb
+			}
+			// The response translator comes from the first rewriter that has
+			// one (bodies have one format, one translation).
+			for _, rw := range r.rewriters {
+				if t := rw.NewResponseTranslator(rewritten, stream); t != nil {
+					translator = t
+					break
+				}
+			}
+			if nb, err := json.Marshal(body); err == nil {
+				cloneBody = nb
+			}
+		}
 	}
-	resetBody(req, origBody) // original stays pristine for later fallbacks
 
 	clone := cloneRequest(req)
-	if rewritten != modelStr {
-		newBody := rewriteModelField(origBody, rewritten)
-		resetBody(clone, newBody)
-	} else {
-		resetBody(clone, origBody)
-	}
+	resetBody(clone, cloneBody)
+	resetBody(req, origBody)
 
-	// Run the subchain (compiled with llm_route's own next as its tail, so
-	// unmatched inner routes fall through out of the subchain), peeking at
-	// the status to decide fallthrough.
+	// Writer stack (response side, outermost first):
+	//   peekWriter    — llm_route's fallthrough decision on the upstream status
+	//   translator    — rewriter-provided response translation (e.g. OpenAI→Claude)
+	// The subchain writes into the translator; both wrap the real writer.
 	pw := &peekWriter{ResponseWriter: w}
-	err = r.Sub.ServeHTTP(pw, clone, next)
+	subW := http.ResponseWriter(pw)
+	if translator != nil {
+		translator.Reset(pw)
+		subW = translator
+	}
+	err := r.Sub.ServeHTTP(subW, clone, next)
 
 	if err != nil || isFallthroughStatus(pw.status()) {
-		// Drain whatever the failing attempt still has in flight (keeps the
-		// upstream connection reusable) and fall through with the original
-		// request. The failure body itself has been captured by any trace
-		// handler inside the subchain.
+		// The attempt failed: discard the translated/translated-in-progress
+		// response and fall through with the pristine original request.
 		pw.discard()
 		return next.ServeHTTP(w, req)
+	}
+	if translator != nil {
+		translator.Finish()
 	}
 	pw.flushHeader()
 	return nil
@@ -341,7 +401,8 @@ func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error)
 			if len(seg) == 0 {
 				continue
 			}
-			if string(seg[0].Text) == "model" {
+			switch string(seg[0].Text) {
+			case "model":
 				d := caddyfile.NewDispenser(seg)
 				d.Next() // consume "model"
 				args := d.RemainingArgs()
@@ -353,9 +414,25 @@ func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error)
 				default:
 					return nil, h.Errf("model takes 1 arg (exact name) or 2 (pattern replacement)")
 				}
-				continue
+			case "rewrite_body":
+				// rewrite_body { <rewriter> [<rewriter>...] } — each inner
+				// segment names a http.handlers.llm_rewriter module.
+				d := caddyfile.NewDispenser(seg)
+				d.Next() // consume "rewrite_body"
+				for d.NextBlock(0) {
+					name := d.Val()
+					// Collect the rewriter's own block (if any) as raw JSON
+					// via its module's standard unmarshaling: simplest is a
+					// module map with the name; zero-arg rewriters only.
+					if d.NextArg() {
+						return nil, d.Errf("rewrite_body rewriters take no arguments for now: %s %s", name, d.Val())
+					}
+					raw := json.RawMessage(`{"rewriter":` + strconv.Quote(name) + `}`)
+					r.RewritersRaw = append(r.RewritersRaw, raw)
+				}
+			default:
+				subSegments = append(subSegments, seg)
 			}
-			subSegments = append(subSegments, seg)
 		}
 		if len(r.Models) == 0 {
 			return nil, h.Errf("llm_route requires at least one model rule")
