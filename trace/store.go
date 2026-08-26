@@ -270,16 +270,17 @@ func (s *rawStore) Save(_ context.Context, traceID, name string, isReq bool, p [
 	defer s.mu.Unlock()
 
 	key := segmentKey{traceID, name, isReq}
-	seg, continuing := s.segments[key]
+	_, continuing := s.segments[key]
 
-	// Rotate when the active file exceeds the threshold; the in-flight
-	// segment is sealed and continues as a new row in the fresh file.
+	// Rotate when the active file exceeds the threshold. Every open segment
+	// is sealed (its row keeps its bytes in the old file); whichever of them
+	// Saves again opens a fresh row in the new file. Clearing the whole map
+	// is what makes concurrent segments safe: leaving another exchange's
+	// entry in place would keep growing its old-file row while its bytes
+	// append to the new file (cross-request data corruption on Get).
 	if s.activeSize > rotateSize {
-		if continuing {
-			// seal the current row; a new row opens below for the remainder
-			delete(s.segments, key)
-			continuing = false
-		}
+		s.segments = map[segmentKey]segmentPos{}
+		continuing = false
 		if err := s.rotate(); err != nil {
 			return err
 		}
@@ -291,13 +292,12 @@ func (s *rawStore) Save(_ context.Context, traceID, name string, isReq bool, p [
 	}
 	s.activeSize += int64(len(p))
 
-	if !continuing {
-		// A fresh segment (rotated continuation or first write): its size
-		// counter starts over; sealed rows keep their own totals.
-		seg = segmentPos{}
+	seg := segmentPos{offset: int64(len(p))}
+	if continuing {
+		seg = s.segments[key]
+		seg.offset += int64(len(p))
 	}
-	seg.offset += int64(len(p))
-	s.segments[key] = seg // keep the write point current for the next Save
+	s.segments[key] = seg
 
 	if !continuing {
 		res, err := s.db.Exec(

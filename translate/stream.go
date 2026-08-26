@@ -245,10 +245,12 @@ func (c *StreamConverter) appendToolCall(tc OpenAIToolCall) ([]SSEEvent, error) 
 	if t.nameKnown && !t.emitted {
 		t.emitted = true
 		c.emitted = true
+		// Opening a tool block closes an open text/thinking block first —
+		// BEFORE reserving the tool's index, so the stop event carries the
+		// still-open block's index (closeOpenBlock reads blockIndex-1).
+		pre := c.closeOpenBlock()
 		t.blockIdx = c.blockIndex
 		c.blockIndex++
-		// Opening a tool block closes an open text/thinking block first.
-		pre := c.closeOpenBlock()
 		return append(pre, SSEEvent{
 			Name: "content_block_start",
 			Data: mustMarshalEvent("content_block_start", map[string]any{

@@ -137,3 +137,55 @@ func TestServeHTTPNoMatchPassesThrough(t *testing.T) {
 		t.Errorf("status = %d", rec.Code)
 	}
 }
+
+// TestPeekWriterHeaderRestoreOnDiscard locks bug-fix #1: a failed attempt's
+// upstream headers (Added into the shared map) must not survive into the
+// fallback's response — the wire saw duplicate Content-Length before.
+func TestPeekWriterHeaderRestoreOnDiscard(t *testing.T) {
+	rec := httptest.NewRecorder()
+	rec.Header().Set("X-Pre-Existing", "keep-me")
+	pw := newPeekWriter(rec)
+
+	// Attempt 1 "runs": reverse_proxy-style header pollution + fallthrough status.
+	pw.Header().Add("Content-Length", "37")
+	pw.Header().Add("Content-Encoding", "gzip")
+	pw.Header().Add("Date", "old-date")
+	pw.WriteHeader(http.StatusNotFound)
+
+	pw.discard()
+
+	// The shared map must be back to the pre-attempt state.
+	if got := pw.Header().Get("Content-Length"); got != "" {
+		t.Errorf("stale Content-Length survived discard: %q", got)
+	}
+	if got := pw.Header().Values("Content-Encoding"); len(got) != 0 {
+		t.Errorf("stale Content-Encoding survived discard: %v", got)
+	}
+	if got := pw.Header().Get("X-Pre-Existing"); got != "keep-me" {
+		t.Errorf("pre-existing header lost: %q", got)
+	}
+}
+
+// TestPeekWriterCommittedNoDoubleResponse locks bug-fix #7: once body bytes
+// reached the client, a failed attempt must NOT fall through — the fallback
+// response would concatenate onto the committed one.
+func TestPeekWriterCommittedNoDoubleResponse(t *testing.T) {
+	rec := httptest.NewRecorder()
+	pw := newPeekWriter(rec)
+
+	pw.WriteHeader(http.StatusOK) // accepted → flushed immediately
+	if _, err := pw.Write([]byte("EVENTS-ALREADY-SENT")); err != nil {
+		t.Fatal(err)
+	}
+	if !pw.headerSent {
+		t.Fatal("expected headerSent after accepted WriteHeader+Write")
+	}
+
+	// Simulated failure after commit: discard must keep the sent bytes and
+	// the route layer must see the committed state (it returns the error
+	// instead of falling through).
+	pw.discard()
+	if rec.Body.String() != "EVENTS-ALREADY-SENT" {
+		t.Errorf("committed bytes must stay on the wire: %q", rec.Body.String())
+	}
+}

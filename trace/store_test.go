@@ -291,3 +291,58 @@ func TestTraceAPIServeHTTP(t *testing.T) {
 type nopHandler struct{}
 
 func (nopHandler) ServeHTTP(_ http.ResponseWriter, _ *http.Request) error { return nil }
+
+// TestRawStoreRotateConcurrentSegments locks the rotation-seal fix: when a
+// rotation fires, EVERY open segment must be sealed — another exchange's
+// continuing segment must not keep growing its old-file row while its bytes
+// land in the new file (that leaked other requests' bytes on Get).
+func TestRawStoreRotateConcurrentSegments(t *testing.T) {
+	s, dir := newTestStore(t)
+	ctx := context.Background()
+
+	// Two exchanges stream concurrently: A writes a big chunk, B has an open
+	// segment in the same file.
+	big := strings.Repeat("a", rotateSize+1)
+	if err := s.Save(ctx, "A", "glm", false, respHead(200)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Save(ctx, "B", "glm", false, respHead(200)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Save(ctx, "B", "glm", false, []byte("B1")); err != nil {
+		t.Fatal(err)
+	}
+	// A's write crosses the threshold; B's next Save must trigger rotation
+	// and open a FRESH row for B (not grow B's old-file row).
+	if err := s.Save(ctx, "A", "glm", false, []byte(big)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Save(ctx, "B", "glm", false, []byte("B2")); err != nil {
+		t.Fatal(err)
+	}
+	// A third exchange writes after rotation; its bytes must not be readable
+	// as part of B's trace.
+	if err := s.Save(ctx, "C", "glm", false, []byte("C-SECRET")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordRequest(ctx, "B", "glm", time.Now(), 1, 200, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.Get(ctx, "B", "glm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := string(got.Response)
+	if resp != string(respHead(200))+"B1B2" {
+		t.Errorf("B's response corrupted across rotation: %q (len %d)", truncStrFor(resp, 80), len(resp))
+	}
+	_ = dir
+}
+
+func truncStrFor(s string, n int) string {
+	if len(s) > n {
+		return s[:n] + "..."
+	}
+	return s
+}

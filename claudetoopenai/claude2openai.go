@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"sync"
 	"strings"
 
 	"github.com/caddyserver/caddy/v2"
@@ -125,7 +126,68 @@ type responseWriter struct {
 
 	// streaming mode
 	feeder *translate.StreamFeeder
-	gz     *gzip.Reader // non-nil when the upstream stream is gzip-encoded
+	// gzGzip marks a gzip-encoded upstream stream (captured at WriteHeader,
+	// before Content-Encoding is deleted from the header map).
+	gzGzip bool
+	// gzSrc feeds compressed bytes to gz across Write calls, so a gzip
+	// member split over multiple Writes still decodes. gzDone closes when
+	// the pump goroutine has drained everything (finish waits on it).
+	gzSrc  *chunkBuf
+	gzDone chan struct{}
+	gz     *gzip.Reader
+}
+
+// gzEnabled reports whether the upstream stream is gzip-encoded.
+func (rw *responseWriter) gzEnabled() bool { return rw.gzGzip }
+
+// chunkBuf is a blocking single-writer/single-reader byte bridge: the pump
+// goroutine's Read blocks until the handler goroutine Writes (or closes).
+type chunkBuf struct {
+	mu     sync.Mutex
+	cond   *sync.Cond
+	buf    bytes.Buffer
+	closed bool
+	// readOff is how many bytes of buf were already consumed.
+	readOff int
+}
+
+func newChunkBuf() *chunkBuf {
+	c := &chunkBuf{}
+	c.cond = sync.NewCond(&c.mu)
+	return c
+}
+
+func (c *chunkBuf) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return 0, io.ErrClosedPipe
+	}
+	c.buf.Write(p)
+	c.cond.Signal()
+	return len(p), nil
+}
+
+func (c *chunkBuf) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.closed = true
+	c.cond.Broadcast()
+	return nil
+}
+
+func (c *chunkBuf) Read(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for c.buf.Len() == c.readOff {
+		if c.closed {
+			return 0, io.EOF
+		}
+		c.cond.Wait()
+	}
+	n := copy(p, c.buf.Bytes()[c.readOff:])
+	c.readOff += n
+	return n, nil
 }
 
 func newBufferedResponseWriter(w http.ResponseWriter, model string) *responseWriter {
@@ -158,6 +220,12 @@ func (rw *responseWriter) WriteHeader(status int) {
 	}
 	// Streaming 200: pass headers through with SSE content type.
 	h := rw.w.Header()
+	// Capture the upstream encoding before deleting the header: the body is
+	// gzip-compressed and must be decompressed before translation, even
+	// though we deliver the translated SSE uncompressed.
+	if strings.EqualFold(h.Get("Content-Encoding"), "gzip") {
+		rw.gzGzip = true // actual reader attached lazily on first body Write
+	}
 	// We translate the body; deliver it uncompressed and say so. Length is
 	// unknown up front (and a fallthrough attempt may have left a stale
 	// Content-Length from an earlier upstream error in the shared header
@@ -185,42 +253,51 @@ func (rw *responseWriter) Write(p []byte) (int, error) {
 }
 
 // writeStream converts upstream SSE incrementally, flushing per event.
-// Gzip-encoded upstream streams are decompressed on the fly.
+// Gzip-encoded upstream streams are decompressed on the fly: the compressed
+// bytes are piped into a single gzip.Reader spanning all Writes (attached
+// lazily on the first Write — gzip.NewReader blocks until header bytes are
+// available), so a member split across chunks still decodes.
 func (rw *responseWriter) writeStream(p []byte) (int, error) {
-	if strings.EqualFold(rw.w.Header().Get("Content-Encoding"), "gzip") {
-		if rw.gz == nil {
-			var err error
-			rw.gz, err = gzip.NewReader(bytes.NewReader(p))
-			if err != nil {
-				return len(p), nil // not usable gzip; drop
-			}
-			defer func() { /* reader kept across writes via MultiStream below */ }()
-			// decompress this chunk (gzip.Reader reads to EOF of member)
-			return rw.feedGzip()
+	if rw.gzEnabled() {
+		if rw.gzSrc == nil {
+			// First Write: attach the decompressor. The reader is created on
+			// the pump goroutine (gzip.NewReader blocks until header bytes
+			// arrive — which is exactly the first Write below).
+			rw.gzSrc = newChunkBuf()
+			rw.gzDone = make(chan struct{})
+			go rw.pumpGzip()
 		}
-		if err := rw.gz.Reset(bytes.NewReader(p)); err != nil {
-			return len(p), nil
+		if _, err := rw.gzSrc.Write(p); err != nil {
+			return len(p), nil // decompressor stopped; drop the rest
 		}
-		return rw.feedGzip()
+		return len(p), nil
 	}
 	return rw.feed(p)
 }
 
-// feedGzip drains the current gzip member into the converter.
-func (rw *responseWriter) feedGzip() (int, error) {
+// pumpGzip owns the gzip.Reader: it is created here (not on the handler
+// goroutine) because its constructor reads the stream header, which only
+// becomes available once the first Write lands. Decompressed bytes are fed
+// into the SSE converter — the pump is the ONLY caller of feed on the gzip
+// path (the handler goroutine never touches the feeder directly while it
+// runs). It exits when the bridge closes (finish) or the stream errors.
+func (rw *responseWriter) pumpGzip() {
+	defer close(rw.gzDone)
+	gzr, err := gzip.NewReader(rw.gzSrc)
+	if err != nil {
+		return // not usable gzip; the handler side keeps dropping bytes
+	}
+	rw.gz = gzr
+	buf := make([]byte, 4096)
 	for {
-		buf := make([]byte, 4096)
-		n, err := rw.gz.Read(buf)
+		n, err := gzr.Read(buf)
 		if n > 0 {
 			if _, ferr := rw.feed(buf[:n]); ferr != nil {
-				return 0, ferr
+				return
 			}
 		}
-		if err == io.EOF {
-			return 0, nil
-		}
 		if err != nil {
-			return 0, nil // corrupt stream; stop feeding
+			return // EOF (upstream finished) or corrupt stream: stop feeding
 		}
 	}
 }
@@ -246,6 +323,15 @@ func (rw *responseWriter) feed(p []byte) (int, error) {
 func (rw *responseWriter) finish() {
 	if rw.stream {
 		if rw.status == http.StatusOK {
+			if rw.gzSrc != nil {
+				// Signal EOF to the pump goroutine and WAIT for it to drain
+				// the last decompressed bytes into the feeder — the feeder
+				// and rw.w are not goroutine-safe, so finish must not touch
+				// them until the pump is done.
+				_ = rw.gzSrc.Close()
+				<-rw.gzDone
+				rw.gzSrc = nil
+			}
 			events, err := rw.feeder.Close()
 			if err == nil {
 				_, _ = rw.w.Write(translate.EncodeAll(events))

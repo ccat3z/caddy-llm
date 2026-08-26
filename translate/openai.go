@@ -7,7 +7,7 @@ import "encoding/json"
 // OpenAIRequest is an OpenAI chat-completions request body.
 type OpenAIRequest struct {
 	Model           string          `json:"model"`
-	Messages        []OpenAIMessage `json:"messages"`
+	Messages        []OpenAIMessage `json:"messages,omitempty"`
 	Tools           []OpenAITool    `json:"tools,omitempty"`
 	ToolChoice      json.RawMessage `json:"tool_choice,omitempty"` // string or object
 	MaxTokens       int             `json:"max_tokens,omitempty"`

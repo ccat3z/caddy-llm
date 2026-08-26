@@ -323,3 +323,40 @@ func TestTranslateRequestStreamOptions(t *testing.T) {
 		t.Error("stream_options.include_usage missing")
 	}
 }
+
+// TestWhitespaceSystemNoPanic locks the fix for the nil-deref on system
+// blocks that carry no translatable text.
+func TestWhitespaceSystemNoPanic(t *testing.T) {
+	for name, sys := range map[string]string{
+		"whitespace": `[{"type":"text","text":"  "}]`,
+		"empty text": `[{"type":"text","text":""}]`,
+		"non-text":   `[{"type":"image","source":{"type":"url","url":"https://x"}}]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			in := &AnthropicRequest{
+				Model:     "m",
+				MaxTokens: 8,
+				System:    json.RawMessage(sys),
+				Messages:  []AnthropicMessage{{Role: "user", Content: json.RawMessage(`"hi"`)}},
+			}
+			out, err := TranslateRequest(in)
+			if err != nil {
+				t.Fatalf("TranslateRequest: %v", err)
+			}
+			for _, m := range out.Messages {
+				if m.Role == "system" {
+					t.Errorf("system message emitted for %q: %+v", sys, m)
+				}
+			}
+			// The map path must not panic either.
+			inMap := map[string]any{
+				"model": "m", "max_tokens": 8,
+				"system":   json.RawMessage(sys),
+				"messages": []any{map[string]any{"role": "user", "content": "hi"}},
+			}
+			if _, err := TranslateRequestMap(inMap); err != nil {
+				t.Fatalf("TranslateRequestMap: %v", err)
+			}
+		})
+	}
+}

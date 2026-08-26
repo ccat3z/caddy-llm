@@ -43,7 +43,11 @@ func TranslateRequest(in *AnthropicRequest) (*OpenAIRequest, error) {
 		if err != nil {
 			return nil, err
 		}
-		out.Messages = append(out.Messages, *msg)
+		// All-whitespace or non-text system blocks produce no message —
+		// systemMessage returns (nil, nil) then; nothing to append.
+		if msg != nil {
+			out.Messages = append(out.Messages, *msg)
+		}
 	}
 
 	for i := range in.Messages {

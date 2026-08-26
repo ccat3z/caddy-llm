@@ -2,6 +2,8 @@ package translate
 
 import (
 	"encoding/json"
+	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -332,4 +334,51 @@ func trunc(s string) string {
 		return s
 	}
 	return s[:max] + "...(truncated)"
+}
+
+// TestStreamTextThenToolIndexes locks the appendToolCall ordering fix: a
+// text block open when a tool call starts must be stopped with ITS index,
+// and the tool block's index must not be reused.
+func TestStreamTextThenToolIndexes(t *testing.T) {
+	f := NewStreamFeeder("m")
+	var all []SSEEvent
+	feed := func(payload string) {
+		evs, err := f.Write([]byte("data: " + payload + "\n\n"))
+		if err != nil {
+			t.Fatalf("feed: %v", err)
+		}
+		all = append(all, evs...)
+	}
+	feed(`{"id":"s","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"}}]}`)
+	feed(`{"id":"s","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"get_weather"}}]}}]}`)
+	feed(`{"id":"s","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`)
+	evs, err := f.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	all = append(all, evs...)
+
+	var seq []string // "start:N kind" / "stop:N"
+	for _, e := range all {
+		var d map[string]any
+		if err := json.Unmarshal(e.Data, &d); err != nil {
+			continue
+		}
+		switch d["type"] {
+		case "content_block_start":
+			kind := d["content_block"].(map[string]any)["type"]
+			seq = append(seq, fmt.Sprintf("start:%v %v", d["index"], kind))
+		case "content_block_stop":
+			seq = append(seq, fmt.Sprintf("stop:%v", d["index"]))
+		}
+	}
+	want := []string{
+		"start:0 text",
+		"stop:0", // text block closed with its own index
+		"start:1 tool_use",
+		"stop:1",
+	}
+	if !reflect.DeepEqual(seq, want) {
+		t.Errorf("block sequence = %v, want %v\nfull: %s", seq, want, EncodeAll(all))
+	}
 }

@@ -103,3 +103,23 @@ func TestTranslateRequestMapErrors(t *testing.T) {
 		t.Error("bad max_tokens type should fail")
 	}
 }
+
+// TestEmptyMessagesPathsAgree locks the alignment fix: a request whose
+// messages all translate away must produce the same wire form on both paths
+// (the struct path used to emit "messages":null while the map path omitted
+// the key — production traffic uses the map path).
+func TestEmptyMessagesPathsAgree(t *testing.T) {
+	structPath, mapPath := bothPaths(t, `{"model":"m","max_tokens":8,"messages":[{"role":"assistant","content":[]}]}`)
+	var a, b map[string]json.RawMessage
+	if err := json.Unmarshal(structPath, &a); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(mapPath, &b); err != nil {
+		t.Fatal(err)
+	}
+	_, hasA := a["messages"]
+	_, hasB := b["messages"]
+	if hasA != hasB {
+		t.Errorf("messages presence differs: struct=%v map=%v\nstruct: %s\nmap: %s", hasA, hasB, structPath, mapPath)
+	}
+}

@@ -82,20 +82,23 @@ func (r *Route) Provision(ctx caddy.Context) error {
 			m.re = re
 		}
 	}
-	if r.SubRaw != nil {
-		mod, err := ctx.LoadModule(r, "SubRaw")
-		if err != nil {
-			return fmt.Errorf("loading subchain: %v", err)
-		}
-		sub, ok := mod.(*caddyhttp.Subroute)
-		if !ok {
-			return fmt.Errorf("subchain must be a subroute, got %T", mod)
-		}
-		if err := sub.Provision(ctx); err != nil {
-			return fmt.Errorf("provisioning llm_route subchain: %v", err)
-		}
-		r.sub = sub
+	if r.SubRaw == nil {
+		// Without a subchain every matching request would panic on the nil
+		// Subroute — fail at load time instead.
+		return fmt.Errorf("llm_route requires a sub (subroute) alongside its models")
 	}
+	mod, err := ctx.LoadModule(r, "SubRaw")
+	if err != nil {
+		return fmt.Errorf("loading subchain: %v", err)
+	}
+	sub, ok := mod.(*caddyhttp.Subroute)
+	if !ok {
+		return fmt.Errorf("subchain must be a subroute, got %T", mod)
+	}
+	if err := sub.Provision(ctx); err != nil {
+		return fmt.Errorf("provisioning llm_route subchain: %v", err)
+	}
+	r.sub = sub
 	return nil
 }
 
@@ -144,17 +147,30 @@ func (r *Route) ServeHTTP(w http.ResponseWriter, req *http.Request, next caddyht
 	// The subchain writes into the peek-wrapped real writer (translating
 	// handlers like claude2openai sit inside the subchain and wrap it
 	// themselves).
-	pw := &peekWriter{ResponseWriter: w}
+	pw := newPeekWriter(w)
 	err = r.sub.ServeHTTP(pw, clone, next)
 
-	if err != nil || isFallthroughStatus(pw.status()) {
-		// The attempt failed: discard the response and fall through with the
-		// pristine original request.
-		pw.discard()
-		return next.ServeHTTP(w, req)
+	if err == nil && !isFallthroughStatus(pw.status()) {
+		pw.flushHeader()
+		return nil
 	}
-	pw.flushHeader()
-	return nil
+
+	// The attempt failed. If any of its response already reached the client
+	// (status accepted and flushed, or body bytes streamed), falling through
+	// would concatenate the fallback's response onto the committed one —
+	// return the error instead and let Caddy abort the exchange.
+	if pw.headerSent {
+		pw.discard()
+		if err == nil {
+			err = fmt.Errorf("llm_route: upstream failed (%d) after the response was already committed", pw.status())
+		}
+		return err
+	}
+
+	// Nothing reached the client: discard the held-back response, restore the
+	// header map, and fall through with the pristine original request.
+	pw.discard()
+	return next.ServeHTTP(w, req)
 }
 
 // match returns the first matching rule and the rewritten model name.
@@ -204,6 +220,12 @@ func cloneRequest(origReq *http.Request) *http.Request {
 // without writing to the real writer until llm_route decides the response is
 // acceptable. Body bytes are streamed straight through once the header has
 // been accepted.
+//
+// The wrapped writer's header map is shared across fallthrough attempts
+// (reverse_proxy copies upstream headers into it via Add). peekWriter
+// therefore snapshots the map before the subchain runs and restores it on
+// discard, so a failed attempt's headers never leak into the fallback's
+// response (duplicate Content-Length / stale Content-Encoding).
 type peekWriter struct {
 	http.ResponseWriter
 	wroteHeader bool
@@ -218,6 +240,16 @@ type peekWriter struct {
 	// flushed by flushHeader (streaming bodies never take this path: the
 	// status reaches WriteHeader directly and flushes immediately).
 	held [][]byte
+	// savedHeader is the header map as it was before the subchain ran.
+	savedHeader http.Header
+}
+
+// newPeekWriter wraps w and snapshots its header map for fallthrough restores.
+func newPeekWriter(w http.ResponseWriter) *peekWriter {
+	return &peekWriter{
+		ResponseWriter: w,
+		savedHeader:    w.Header().Clone(),
+	}
 }
 
 func (pw *peekWriter) WriteHeader(code int) {
@@ -282,11 +314,22 @@ func (pw *peekWriter) flushHeader() {
 	pw.held = nil
 }
 
-// discard marks the response as dropped (fallthrough); already-buffered
-// nothing to drain because writes were dropped at the peek layer — the
-// upstream connection itself is closed by reverse_proxy.
+// discard drops the failed attempt's response: the held-back header/body is
+// released, and the shared header map is restored to its pre-attempt state
+// so the next attempt starts clean (reverse_proxy Adds upstream headers into
+// the same map; without the restore they leak into the fallback's response
+// as duplicates). It cannot un-send a header/body already flushed to the
+// client — callers must not fall through after headerSent.
 func (pw *peekWriter) discard() {
 	pw.headerSent = false
+	pw.held = nil
+	h := pw.Header()
+	for k := range h {
+		delete(h, k)
+	}
+	for k, vs := range pw.savedHeader {
+		h[k] = vs
+	}
 }
 
 // Flush streams through once accepted; before that it is a no-op so SSE
