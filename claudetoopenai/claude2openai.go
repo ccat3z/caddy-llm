@@ -63,48 +63,23 @@ func (c *Claude2OpenAI) ServeHTTP(w http.ResponseWriter, r *http.Request, next c
 		return next.ServeHTTP(w, r)
 	}
 
-	var req translate.AnthropicRequest
-	stream := false
-	model := ""
-	if jb, ok := r.Body.(*llmroute.Body); ok {
-		// llm_route already parsed the body: translate the object in place
-		// (before anyone reads the bytes). The wire form marshals on demand.
-		if jb.Readonly() {
-			return c.writeClaudeError(w, http.StatusInternalServerError, "api_error", "request body already consumed before translation")
-		}
-		stream, _ = jb.Obj["stream"].(bool)
-		model, _ = jb.Obj["model"].(string)
-		outMap, err := translate.TranslateRequestMap(jb.Obj)
-		if err != nil {
-			return c.writeClaudeError(w, http.StatusBadRequest, "invalid_request_error", "translate request: "+err.Error())
-		}
-		jb.Obj = outMap
-	} else {
-		body, err := io.ReadAll(io.LimitReader(r.Body, maxBodySize))
-		if err != nil {
-			return c.writeClaudeError(w, http.StatusBadRequest, "invalid_request_error", "read request body: "+err.Error())
-		}
-		if err := json.Unmarshal(body, &req); err != nil {
-			return c.writeClaudeError(w, http.StatusBadRequest, "invalid_request_error", "parse request body: "+err.Error())
-		}
-		openaiReq, err := translate.TranslateRequest(&req)
-		if err != nil {
-			return c.writeClaudeError(w, http.StatusBadRequest, "invalid_request_error", "translate request: "+err.Error())
-		}
-		outBody, err := json.Marshal(openaiReq)
-		if err != nil {
-			return c.writeClaudeError(w, http.StatusInternalServerError, "api_error", err.Error())
-		}
-		// Replace the request for downstream handlers (reverse_proxy).
-		r.Body = io.NopCloser(bytes.NewReader(outBody))
-		r.ContentLength = int64(len(outBody))
-		r.Header.Set("Content-Length", strconv.Itoa(len(outBody)))
-		r.GetBody = func() (io.ReadCloser, error) {
-			return io.NopCloser(bytes.NewReader(outBody)), nil
-		}
-		stream = req.Stream
-		model = req.Model
+	// The body always ends up as an llmroute.Body: one that llm_route
+	// installed is reused, anything else is read once and parsed here. The
+	// object is then translated in place; the wire form marshals on demand.
+	jb, err := llmroute.FromBody(r)
+	if err != nil {
+		return c.writeClaudeError(w, http.StatusBadRequest, "invalid_request_error", "read request body: "+err.Error())
 	}
+	if jb.Readonly() {
+		return c.writeClaudeError(w, http.StatusInternalServerError, "api_error", "request body already consumed before translation")
+	}
+	stream, _ := jb.Obj["stream"].(bool)
+	model, _ := jb.Obj["model"].(string)
+	outMap, err := translate.TranslateRequestMap(jb.Obj)
+	if err != nil {
+		return c.writeClaudeError(w, http.StatusBadRequest, "invalid_request_error", "translate request: "+err.Error())
+	}
+	jb.Obj = outMap
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Del("Anthropic-Version")
 	r.Header.Del("Anthropic-Beta")
@@ -200,7 +175,6 @@ func (rw *responseWriter) WriteHeader(status int) {
 }
 
 func (rw *responseWriter) Write(p []byte) (int, error) {
-
 
 	if rw.stream && rw.status == http.StatusOK {
 		return rw.writeStream(p)

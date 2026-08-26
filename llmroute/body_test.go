@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -143,4 +144,58 @@ func TestDeepCopyObjIsolation(t *testing.T) {
 	if orig["meta"].(map[string]any)["nested"].(map[string]any)["deep"] != true {
 		t.Error("nested map leak")
 	}
+}
+
+func TestFromBody(t *testing.T) {
+	t.Run("plain body is parsed and installed", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"model":"m","n":1}`))
+		b, err := FromBody(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if req.Body != io.ReadCloser(b) {
+			t.Error("FromBody must install the Body on the request")
+		}
+		if req.ContentLength != -1 {
+			t.Errorf("ContentLength = %d, want -1", req.ContentLength)
+		}
+		if b.Obj["model"] != "m" {
+			t.Errorf("obj = %v", b.Obj)
+		}
+		out, _ := io.ReadAll(req.Body)
+		if string(out) != `{"model":"m","n":1}` {
+			t.Errorf("read = %s", out)
+		}
+	})
+
+	t.Run("existing Body returned as is", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/", nil)
+		orig := New(map[string]any{"a": float64(1)})
+		SetRequestBody(req, orig)
+		b, err := FromBody(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if b != orig {
+			t.Error("FromBody must return the installed Body unchanged")
+		}
+	})
+
+	t.Run("non-JSON body errors and stays readable", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("not json"))
+		if _, err := FromBody(req); err == nil {
+			t.Error("non-JSON body should fail")
+		}
+		out, err := io.ReadAll(req.Body)
+		if err != nil || string(out) != "not json" {
+			t.Errorf("body must be re-installed readable, got %q %v", out, err)
+		}
+	})
+
+	t.Run("empty body errors", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(""))
+		if _, err := FromBody(req); err == nil {
+			t.Error("empty body should fail")
+		}
+	})
 }

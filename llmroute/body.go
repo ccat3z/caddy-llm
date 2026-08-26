@@ -3,6 +3,7 @@ package llmroute
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 )
@@ -83,6 +84,34 @@ func (b *Body) Read(p []byte) (int, error) {
 func (b *Body) Close() error { return nil }
 
 var _ io.ReadCloser = (*Body)(nil)
+
+// FromBody converts the request's body into its parsed *Body form: it reads
+// the current body once, parses it as a JSON object, and installs the result
+// via SetRequestBody. A request already carrying a *Body is returned as is.
+// When the body is empty or not a JSON object, the raw bytes are re-installed
+// unchanged and the error describes the failure.
+func FromBody(r *http.Request) (*Body, error) {
+	if b, ok := r.Body.(*Body); ok {
+		return b, nil
+	}
+	if r.Body == nil {
+		return nil, fmt.Errorf("empty body")
+	}
+	raw, err := io.ReadAll(io.LimitReader(r.Body, maxBodySize))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("empty body")
+	}
+	b, err := FromBytes(raw)
+	if err != nil {
+		resetBody(r, raw) // keep the request readable on the error path
+		return nil, err
+	}
+	SetRequestBody(r, b)
+	return b, nil
+}
 
 // SetRequestBody installs b as the request's body. The length is only known
 // once the bytes are marshaled, so the request is switched to chunked
