@@ -23,7 +23,12 @@ func init() {
 	caddy.RegisterModule(Tracer{})
 }
 
-// TraceIDHeader correlates the tracer stages of one client request.
+// traceIDVar carries the trace id between the tracer stages of one client
+// request via caddyhttp vars — shared through the request context (llm_route
+// clones keep it), never leaked onto the wire.
+const traceIDVar = "llm_trace_id"
+
+// TraceIDHeader returns the trace id to the client (response side only).
 const TraceIDHeader = "X-LLM-Trace-ID"
 
 // Tracer records request/response exchanges to the trace store.
@@ -71,12 +76,14 @@ func (t *Tracer) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 	start := time.Now()
 
 	// Correlate stages: the first tracer mints the ID; later tracers reuse it.
-	traceID := r.Header.Get(TraceIDHeader)
+	// The id travels in a request var (context-scoped, survives llm_route's
+	// clones) — not a header, so it never reaches upstreams.
+	traceID, _ := caddyhttp.GetVar(r.Context(), traceIDVar).(string)
 	if traceID == "" {
 		traceID = newTraceID()
-		r.Header.Set(TraceIDHeader, traceID)
-		w.Header().Set(TraceIDHeader, traceID)
+		caddyhttp.SetVar(r.Context(), traceIDVar, traceID)
 	}
+	w.Header().Set(TraceIDHeader, traceID)
 
 	s := t.storage()
 
