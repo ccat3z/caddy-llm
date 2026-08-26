@@ -75,8 +75,13 @@ Behavior:
   deep copy of the parsed object. The request is cloned, so nothing leaks
   between blocks — a fallthrough hands the next block the pristine original.
 - Fallthrough happens when no rule matches, or the subchain answers 429/404/
-  5xx, or the subchain errors (dial failure). The next llm_route then sees
-  the pristine original request.
+  5xx, or the subchain errors (dial failure). The failed attempt's response
+  headers are discarded (the shared header map is restored), so the fallback
+  starts clean. The next llm_route then sees the pristine original request.
+- Fallthrough is one-shot per response: once any body bytes of an attempt
+  reached the client (e.g. a stream that broke mid-way), llm_route returns
+  the error instead of falling through — a second response can't be
+  concatenated onto the committed one.
 - Put `trace` handlers inside each block: failed attempts keep their
   response bodies in the trace store, so fallbacks are distinguishable.
 
@@ -98,30 +103,32 @@ serving retries from the frozen bytes.
 ```
 client ──Claude──▶ trace(claude) ──▶ claude2openai ──OpenAI──▶ trace(openai) ──▶ reverse_proxy ──▶ upstream
                                          translates the parsed body in place,
-                                         strips anthropic-* headers
+                                         strips Anthropic-Version/-Beta
 ```
 
 Responses flow back through the same chain: non-streaming JSON is buffered
 and translated in one shot; SSE streams are converted incrementally
-(line-buffered, flushed per event). Tool-call arguments are buffered per
-OpenAI index and flushed as a single `input_json_delta`. `[DONE]` is never
-forwarded to the client. Errors are mapped to the Anthropic error envelope
+(line-buffered, flushed per event). Gzip-encoded upstream streams are
+decompressed on the fly — including members split across chunk boundaries.
+Tool-call arguments are buffered per OpenAI index and flushed as a single
+`input_json_delta`. `[DONE]` is never forwarded to the client. Errors are
+mapped to the Anthropic error envelope
 (`{"type":"error","error":{"type":...,"message":...}}`) with upstream JSON
 error bodies overriding the status-derived type.
 
-Both tracers of one request share an `X-LLM-Trace-ID` (also returned to the
-client as a response header); each stage records its own exchange
-(`<trace-id>/<stage>`), so a Claude-format and an OpenAI-format capture of
-the same exchange are correlated.
+Both tracers of one request share a trace id (correlated via a request var;
+also returned to the client as an `X-LLM-Trace-ID` response header); each
+stage records its own exchange (`<trace-id>/<stage>`), so a Claude-format
+and an OpenAI-format capture of the same exchange are correlated.
 
 ### Trace storage
 
 Each traced direction is stored as a **raw, replayable HTTP/1.1 message** —
-request-line/status line, headers, blank line, and the original body bytes —
-appended to rolling `history-<timestamp>.raw` files (100MB each, no wrapper
-format). A message segment taken from disk can be replayed directly.
-Everything is written incrementally: every SSE chunk goes to disk as it
-arrives, so a crash mid-stream keeps what already came in.
+request-line/status line (including `Host`), headers, blank line, and the
+original body bytes — appended to rolling `history-<timestamp>.raw` files
+(100MB each, no wrapper format). A message segment taken from disk can be
+replayed directly. Everything is written incrementally: every SSE chunk goes
+to disk as it arrives, so a crash mid-stream keeps what already came in.
 
 Positioning and aggregate metadata live in `index.db` (SQLite, WAL):
 `raw_log_idx` locates every message segment, `llm_requests` holds the
@@ -196,6 +203,33 @@ examples/                 validated JSON config examples
 cmd/caddy-llm/            custom binary entry
 all.go                    side-effect import of every module
 ```
+
+## Performance notes
+
+Known hot-path costs, in rough priority order (all correctness-safe, all
+candidates for optimization):
+
+- **Per-SSE-chunk SQLite work**: every traced response chunk appends to the
+  raw file *and* runs a SQLite `UPDATE` of the segment size, inside one
+  process-wide mutex. A 2,000-chunk stream pays ~2,000 statement
+  compiles+commits, and concurrent streams serialize. Deferring the size
+  update to the request's completion (or batching) is the obvious fix.
+- **Tracing adds latency to every client write**: the chunk write above
+  happens synchronously in front of the client's `Write` (also the
+  first-byte latency of a stream). A buffered writer goroutine would move
+  it off the hot path at the cost of a small crash window.
+- **Trace reads block writers**: `Get` holds the store's mutex across full
+  disk reads; one large trace query freezes in-flight streams. An RWMutex
+  (or dropping the lock before reading) fixes it.
+- **Segment map never evicted**: one entry per traced exchange direction,
+  freed only on file rotation.
+- **Deep clone per routing attempt**: every matched `llm_route` block
+  deep-copies the whole parsed body (a 96KB Claude Code request is ~4–6k
+  map/slice nodes), even when nothing downstream mutates it.
+- **Tool schemas re-parsed per request**: `normalizeSchema` parses and
+  re-marshals every tool's input schema on every request, even though
+  Claude Code sends byte-identical schemas each time; memoizing by raw
+  bytes removes it.
 
 ## Status / limitations
 
