@@ -145,7 +145,7 @@ func (r *Route) ServeHTTP(w http.ResponseWriter, req *http.Request, next caddyht
 			obj[k] = v
 		}
 		obj["model"] = rewritten
-		cloneBody = New(obj)
+		cloneBody = NewJsonBody(obj)
 	}
 	// Always reinstall as a set: the struct copy in cloneRequest would
 	// otherwise carry the original request's GetBody (serving the original

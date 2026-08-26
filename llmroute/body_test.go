@@ -9,7 +9,7 @@ import (
 )
 
 func TestReadSemantics(t *testing.T) {
-	b, err := FromBytes([]byte(`{"model":"glm-5.2"}`))
+	b, err := NewJsonBodyFromBytes([]byte(`{"model":"glm-5.2"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +30,7 @@ func TestReadSemantics(t *testing.T) {
 }
 
 func TestReadIsStreamed(t *testing.T) {
-	b := New(map[string]any{"k": "vvvvvvvv"})
+	b := NewJsonBody(map[string]any{"k": "vvvvvvvv"})
 	buf := make([]byte, 4)
 	n, err := b.Read(buf)
 	if err != nil || string(buf[:n]) != `{"k"` {
@@ -47,14 +47,14 @@ func TestReadIsStreamed(t *testing.T) {
 
 func TestFromBytesRejectsNonObject(t *testing.T) {
 	for _, raw := range []string{`not json`, `[1,2]`, `42`, `null`} {
-		if _, err := FromBytes([]byte(raw)); err == nil {
-			t.Errorf("FromBytes(%q) should fail", raw)
+		if _, err := NewJsonBodyFromBytes([]byte(raw)); err == nil {
+			t.Errorf("NewJsonBodyFromBytes(%q) should fail", raw)
 		}
 	}
 }
 
 func TestMarshalIsPureSnapshot(t *testing.T) {
-	b := New(map[string]any{"k": "vvvv"})
+	b := NewJsonBody(map[string]any{"k": "vvvv"})
 
 	// Partial read first: 4 of the 11 wire bytes.
 	buf := make([]byte, 4)
@@ -89,7 +89,7 @@ func TestMarshalIsPureSnapshot(t *testing.T) {
 }
 
 func TestMarshalBeforeAnyRead(t *testing.T) {
-	b := New(map[string]any{"a": float64(1)})
+	b := NewJsonBody(map[string]any{"a": float64(1)})
 	raw, err := b.Marshal()
 	if err != nil {
 		t.Fatal(err)
@@ -104,7 +104,7 @@ func TestMarshalBeforeAnyRead(t *testing.T) {
 }
 
 func TestSetRequestBodyInstallSemantics(t *testing.T) {
-	b, err := FromBytes([]byte(`{"model":"m"}`))
+	b, err := NewJsonBodyFromBytes([]byte(`{"model":"m"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestSetRequestBodyRegularReadStillWorks(t *testing.T) {
 	// The body remains a plain io.ReadCloser for handlers that don't know
 	// the type: reading drains it exactly once.
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	SetRequestBody(req, New(map[string]any{"a": float64(1)}))
+	SetRequestBody(req, NewJsonBody(map[string]any{"a": float64(1)}))
 	out, err := io.ReadAll(req.Body)
 	if err != nil {
 		t.Fatal(err)
@@ -158,7 +158,7 @@ func TestSetRequestBodyRegularReadStillWorks(t *testing.T) {
 // original body object) — the property the old Clone-based design got from
 // deep copies.
 func TestShallowVariantIsolation(t *testing.T) {
-	orig := New(map[string]any{
+	orig := NewJsonBody(map[string]any{
 		"model":    "mc/glm-5.2",
 		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
 	})
@@ -169,7 +169,7 @@ func TestShallowVariantIsolation(t *testing.T) {
 		obj[k] = v
 	}
 	obj["model"] = "glm-5.2"
-	variant := New(obj)
+	variant := NewJsonBody(obj)
 
 	if variant.Obj["model"] != "glm-5.2" {
 		t.Fatalf("variant model = %v", variant.Obj["model"])
@@ -185,7 +185,7 @@ func TestShallowVariantIsolation(t *testing.T) {
 	reqA := httptest.NewRequest(http.MethodPost, "/", nil)
 	SetRequestBody(reqA, variant)
 	reqB := httptest.NewRequest(http.MethodPost, "/", nil)
-	SetRequestBody(reqB, New(map[string]any{"model": "replaced"}))
+	SetRequestBody(reqB, NewJsonBody(map[string]any{"model": "replaced"}))
 	outA, _ := io.ReadAll(reqA.Body)
 	if !strings.Contains(string(outA), `"model":"glm-5.2"`) {
 		t.Errorf("reqA body = %s (model must stay glm-5.2)", outA)
@@ -195,7 +195,7 @@ func TestShallowVariantIsolation(t *testing.T) {
 // TestFromBodyIdempotent: an already-installed body is returned as is.
 func TestFromBodyIdempotent(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	orig := New(map[string]any{"x": float64(1)})
+	orig := NewJsonBody(map[string]any{"x": float64(1)})
 	SetRequestBody(req, orig)
 	b, err := FromBody(req)
 	if err != nil {

@@ -23,7 +23,7 @@ import (
 // changes.
 type ReadOnlyJsonBody struct {
 	// Obj is the parsed JSON object. Immutable by convention from
-	// construction on: New takes ownership, so callers must not mutate it
+	// construction on: NewJsonBody takes ownership, so callers must not mutate it
 	// (at any depth) after handing it over.
 	Obj map[string]any
 
@@ -33,8 +33,8 @@ type ReadOnlyJsonBody struct {
 	eof bool
 }
 
-// FromBytes parses raw as a JSON object.
-func FromBytes(raw []byte) (*ReadOnlyJsonBody, error) {
+// NewJsonBodyFromBytes parses raw as a JSON object.
+func NewJsonBodyFromBytes(raw []byte) (*ReadOnlyJsonBody, error) {
 	var obj map[string]any
 	if err := json.Unmarshal(raw, &obj); err != nil {
 		return nil, err
@@ -42,12 +42,12 @@ func FromBytes(raw []byte) (*ReadOnlyJsonBody, error) {
 	if obj == nil { // "null" unmarshals to a nil map without error
 		return nil, io.ErrUnexpectedEOF
 	}
-	return New(obj), nil
+	return NewJsonBody(obj), nil
 }
 
-// New wraps an already-parsed JSON object. The map is owned by the body from
-// here on; callers must not retain or mutate it.
-func New(obj map[string]any) *ReadOnlyJsonBody { return &ReadOnlyJsonBody{Obj: obj} }
+// NewJsonBody wraps an already-parsed JSON object. The map is owned by the
+// body from here on; callers must not retain or mutate it.
+func NewJsonBody(obj map[string]any) *ReadOnlyJsonBody { return &ReadOnlyJsonBody{Obj: obj} }
 
 // Marshal returns the body's wire bytes, marshaling them from Obj if not
 // already cached. A pure snapshot: it does not disturb the read cursor, and
@@ -117,7 +117,7 @@ func FromBody(r *http.Request) (*ReadOnlyJsonBody, error) {
 	if len(raw) == 0 {
 		return nil, fmt.Errorf("empty body")
 	}
-	b, err := FromBytes(raw)
+	b, err := NewJsonBodyFromBytes(raw)
 	if err != nil {
 		SetRawRequestBody(r, raw) // keep the request readable on the error path
 		return nil, err

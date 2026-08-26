@@ -75,7 +75,7 @@ func (c *Claude2OpenAI) ServeHTTP(w http.ResponseWriter, r *http.Request, next c
 	if err != nil {
 		return c.writeClaudeError(w, http.StatusBadRequest, "invalid_request_error", "translate request: "+err.Error())
 	}
-	llmroute.SetRequestBody(r, llmroute.New(outMap))
+	llmroute.SetRequestBody(r, llmroute.NewJsonBody(outMap))
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Del("Anthropic-Version")
 	r.Header.Del("Anthropic-Beta")
