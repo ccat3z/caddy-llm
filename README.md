@@ -17,7 +17,7 @@ with `caddy-llm run --config caddy.json`; see `examples/`.
 | `http.handlers.llm_route` | Model-based upstream routing with fallthrough: each block matches the request's model (literal or anchored regex with rewrite), runs its own subchain on a cloned request, and falls through to the next block on 429/404/5xx or subchain errors. |
 | `http.handlers.trace` | Captures the request/response passing through it (both sides of a translation when chained) and records them to the trace store. |
 | `http.handlers.llm_tracer_api` | HTTP query API for recorded traces. |
-| `llm_tracer` (app) | Trace persistence: append-only `traces.jsonl` + in-memory index. |
+| `llm_tracer` (app) | Trace persistence: raw replayable HTTP messages in rolling `history-*.raw` files + SQLite index. |
 
 ## Examples
 
@@ -110,15 +110,41 @@ forwarded to the client. Errors are mapped to the Anthropic error envelope
 error bodies overriding the status-derived type.
 
 Both tracers of one request share an `X-LLM-Trace-ID` (also returned to the
-client as a response header); each stage records its own entry
+client as a response header); each stage records its own exchange
 (`<trace-id>/<stage>`), so a Claude-format and an OpenAI-format capture of
-the same exchange are correlated. Captured `Authorization`/`X-Api-Key`
-headers are redacted before persistence.
+the same exchange are correlated.
+
+### Trace storage
+
+Each traced direction is stored as a **raw, replayable HTTP/1.1 message** —
+request-line/status line, headers, blank line, and the original body bytes —
+appended to rolling `history-<timestamp>.raw` files (100MB each, no wrapper
+format). A message segment taken from disk can be replayed directly.
+Everything is written incrementally: every SSE chunk goes to disk as it
+arrives, so a crash mid-stream keeps what already came in.
+
+Positioning and aggregate metadata live in `index.db` (SQLite, WAL):
+`raw_log_idx` locates every message segment, `llm_requests` holds the
+per-request summary (trace id, name, duration, status, byte counts). Note
+the raw files contain the original credentials — protect the trace
+directory accordingly.
 
 ### Trace API
 
+The handler is prefix-agnostic: mount it at any path with `rewrite`'s
+`strip_path_prefix` (see the examples):
+
+```json
+"match": [{"path": ["/llm/traces*"]}],
+"handle": [
+  {"handler": "rewrite", "strip_path_prefix": "/llm/traces"},
+  {"handler": "llm_tracer_api"}
+]
+```
+
 - `GET /llm/traces?stage=claude&limit=50&offset=0` — newest-first summaries.
-- `GET /llm/traces/{id}` — full entry including bodies (base64 in JSON).
+- `GET /llm/traces/{traceID}/{name}` — full exchange: metadata plus the raw
+  request/response messages (base64 in JSON).
 
 ## Build
 

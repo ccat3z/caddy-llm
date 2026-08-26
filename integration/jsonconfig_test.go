@@ -49,8 +49,11 @@ func TestFullChainJSON(t *testing.T) {
 							// Caddyfile-style matcher reordering), so specific
 							// routes must come before any catch-all.
 							map[string]any{
-								"match":  []any{map[string]any{"path": []string{"/llm/traces*"}}},
-								"handle": []any{map[string]any{"handler": "llm_tracer_api"}},
+								"match": []any{map[string]any{"path": []string{"/llm/traces*"}}},
+								"handle": []any{
+									map[string]any{"handler": "rewrite", "strip_path_prefix": "/llm/traces"},
+									map[string]any{"handler": "llm_tracer_api"},
+								},
 							},
 							map[string]any{
 								"match": []any{map[string]any{"path": []string{"/v1/messages"}}},
@@ -142,14 +145,14 @@ func TestFullChainJSON(t *testing.T) {
 	waitFor("both trace stages", func() bool {
 		n := 0
 		for _, e := range fetchList() {
-			if strings.HasPrefix(e["id"].(string), traceID) {
+			if e["trace_id"] == traceID {
 				n++
 			}
 		}
 		return n >= 2
 	})
 
-	// Full entry via the API: request bodies stored, one per stage.
+	// Full exchange via the API: replayable raw messages, one per stage.
 	getEntry := func(stage string) map[string]any {
 		gresp, err := http.Get(httpBase() + "/llm/traces/" + traceID + "/" + stage)
 		if err != nil {
@@ -161,7 +164,7 @@ func TestFullChainJSON(t *testing.T) {
 		json.Unmarshal(gb, &e)
 		return e
 	}
-	decodeBody := func(v any) string {
+	decodeRaw := func(v any) string {
 		s, _ := v.(string)
 		b, err := base64.StdEncoding.DecodeString(s)
 		if err != nil {
@@ -169,18 +172,24 @@ func TestFullChainJSON(t *testing.T) {
 		}
 		return string(b)
 	}
-	claudeBody := decodeBody(getEntry("claude")["request_body"])
-	if !strings.Contains(claudeBody, `"max_tokens":10`) || !strings.Contains(claudeBody, `"content":"hi"`) {
-		t.Errorf("claude stage request_body = %s", claudeBody)
+	claudeMsg := decodeRaw(getEntry("claude")["request_raw"])
+	if !strings.HasPrefix(claudeMsg, "POST /v1/messages HTTP/1.1\r\n") {
+		t.Errorf("claude stage request_raw = %q", claudeMsg[:40])
 	}
-	openaiBody := decodeBody(getEntry("openai")["request_body"])
-	if !strings.Contains(openaiBody, `"stream":false`) {
-		t.Errorf("openai stage request_body = %s", openaiBody)
+	if !strings.Contains(claudeMsg, `"max_tokens":10`) || !strings.Contains(claudeMsg, `"content":"hi"`) {
+		t.Errorf("claude stage request body = %s", claudeMsg)
+	}
+	openaiMsg := decodeRaw(getEntry("openai")["request_raw"])
+	if !strings.Contains(openaiMsg, `"stream":false`) {
+		t.Errorf("openai stage request_raw = %s", openaiMsg)
 	}
 
-	// Persistence under the configured dir.
-	waitFor("traces.jsonl flushed", func() bool {
-		data, err := os.ReadFile(filepath.Join(traceDir, "traces.jsonl"))
-		return err == nil && strings.Count(string(data), "\n") >= 2
+	// Persistence under the configured dir: SQLite index + raw history file.
+	waitFor("index.db and history file", func() bool {
+		if _, err := os.Stat(filepath.Join(traceDir, "index.db")); err != nil {
+			return false
+		}
+		matches, _ := filepath.Glob(filepath.Join(traceDir, "history-*.raw"))
+		return len(matches) > 0
 	})
 }

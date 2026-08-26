@@ -5,9 +5,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
@@ -23,9 +25,6 @@ func init() {
 
 // TraceIDHeader correlates the tracer stages of one client request.
 const TraceIDHeader = "X-LLM-Trace-ID"
-
-// maxCapture caps in-memory capture per request/response body.
-const maxCapture = 10 << 20 // 10MB
 
 // Tracer records request/response exchanges to the trace store.
 type Tracer struct {
@@ -79,80 +78,115 @@ func (t *Tracer) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 		w.Header().Set(TraceIDHeader, traceID)
 	}
 
-	// Capture the request body while keeping it readable downstream.
-	var reqBuf bytes.Buffer
-	reqTrunc := false
-	if jb, ok := r.Body.(*llmroute.Body); ok {
-		// llm_route's parsed body: snapshot the object without touching
-		// r.Body, so downstream handlers keep the type to assert against.
-		raw, err := json.Marshal(jb.Obj)
-		if err != nil {
-			return err
+	s := t.storage()
+
+	// Record the full inbound request as a replayable HTTP/1.1 message:
+	// request-line + headers + blank line, then the raw body.
+	reqBytes := 0
+	if s != nil {
+		var head bytes.Buffer
+		fmt.Fprintf(&head, "%s %s HTTP/1.1\r\n", r.Method, r.URL.RequestURI())
+		for k, vs := range r.Header {
+			for _, v := range vs {
+				fmt.Fprintf(&head, "%s: %s\r\n", k, v)
+			}
 		}
-		reqBuf.Write(raw)
-	} else if r.Body != nil {
-		body, err := io.ReadAll(io.LimitReader(r.Body, maxCapture+1))
-		if err != nil {
-			return err
-		}
-		if len(body) > maxCapture {
-			reqTrunc = true
-			body = body[:maxCapture]
-		}
-		reqBuf.Write(body)
-		r.Body = io.NopCloser(bytes.NewReader(body))
-		r.ContentLength = int64(reqBuf.Len())
-		r.Header.Set("Content-Length", strconv.Itoa(reqBuf.Len()))
-		r.GetBody = func() (io.ReadCloser, error) {
-			return io.NopCloser(bytes.NewReader(reqBuf.Bytes())), nil
+		head.WriteString("\r\n")
+		if err := s.Save(r.Context(), traceID, t.Stage, true, head.Bytes()); err != nil {
+			t.logger.Error("save request head", zap.Error(err), zap.String("id", traceID))
+			s = nil // storage broken; skip further writes
 		}
 	}
+	var body []byte
+	if r.Body != nil {
+		if jb, ok := r.Body.(*llmroute.Body); ok {
+			// Snapshot the parsed object without touching r.Body, so
+			// downstream handlers keep the type to assert against.
+			raw, err := marshalBody(jb)
+			if err != nil {
+				return err
+			}
+			body = raw
+		} else {
+			raw, err := io.ReadAll(r.Body)
+			if err != nil {
+				return err
+			}
+			body = raw
+			// Restore for downstream consumption.
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			r.ContentLength = int64(len(body))
+			r.Header.Set("Content-Length", strconv.Itoa(len(body)))
+			r.GetBody = func() (io.ReadCloser, error) {
+				return io.NopCloser(bytes.NewReader(body)), nil
+			}
+		}
+	}
+	if s != nil && len(body) > 0 {
+		if err := s.Save(r.Context(), traceID, t.Stage, true, body); err != nil {
+			t.logger.Error("save request body", zap.Error(err), zap.String("id", traceID))
+			s = nil
+		}
+		reqBytes = len(body)
+	}
 
-	rw := &teeResponseWriter{ResponseWriter: w}
+	rw := &teeResponseWriter{ResponseWriter: w, tracer: t, traceID: traceID, stage: t.Stage, storage: s}
 	err := next.ServeHTTP(rw, r)
 
-	entry := &Entry{
-		ID:              traceID + "/" + t.Stage,
-		Stage:           t.Stage,
-		Timestamp:       start.UTC(),
-		Method:          r.Method,
-		Path:            r.URL.Path,
-		RequestHeaders:  sanitizeHeaders(r.Header),
-		RequestBody:     reqBuf.Bytes(),
-		Status:          rw.status,
-		ResponseHeaders: sanitizeHeaders(rw.Header()),
-		ResponseBody:    rw.buf.Bytes(),
-		DurationMS:      time.Since(start).Milliseconds(),
-		Truncated:       reqTrunc || rw.truncated,
+	status := rw.status
+	if status == 0 {
+		status = http.StatusOK
 	}
-	if entry.Status == 0 {
-		entry.Status = http.StatusOK
+	if s != nil {
+		if rerr := s.RecordRequest(r.Context(), traceID, t.Stage, start.UTC(),
+			int(time.Since(start).Milliseconds()), status, reqBytes, rw.written); rerr != nil {
+			t.logger.Error("record request", zap.Error(rerr), zap.String("id", traceID))
+		}
 	}
-	// Record asynchronously — tracing must not add latency.
-	go func() {
-		s := t.storage()
-		if s == nil {
-			t.logger.Error("trace store not started; dropping trace", zap.String("id", entry.ID))
-			return
-		}
-		if err := s.Append(nil, entry); err != nil {
-			t.logger.Error("append trace", zap.Error(err), zap.String("id", entry.ID))
-		}
-	}()
 	return err
 }
 
-// teeResponseWriter passes writes through to the client while capturing a
-// bounded copy.
+// marshalBody produces the wire bytes of an llmroute.Body without disturbing
+// its state.
+func marshalBody(jb *llmroute.Body) ([]byte, error) {
+	return json.Marshal(jb.Obj)
+}
+
+// teeResponseWriter passes response bytes through to the client while
+// appending them to the trace store incrementally — every Write goes to disk
+// immediately, so a crash mid-stream keeps whatever already arrived.
 type teeResponseWriter struct {
 	http.ResponseWriter
-	status    int
-	buf       bytes.Buffer
-	truncated bool
+	status  int
+	written int
+
+	tracer    *Tracer
+	traceID   string
+	stage     string
+	storage   storage
+	headSaved bool
 }
 
 func (w *teeResponseWriter) WriteHeader(status int) {
 	w.status = status
+	if w.storage != nil && !w.headSaved {
+		w.headSaved = true
+		var head bytes.Buffer
+		fmt.Fprintf(&head, "HTTP/1.1 %d %s\r\n", status, http.StatusText(status))
+		for k, vs := range w.Header() {
+			if strings.EqualFold(k, "Content-Length") {
+				continue // may be stale through fallthrough stacks
+			}
+			for _, v := range vs {
+				fmt.Fprintf(&head, "%s: %s\r\n", k, v)
+			}
+		}
+		head.WriteString("\r\n")
+		if err := w.storage.Save(nil, w.traceID, w.stage, false, head.Bytes()); err != nil {
+			w.tracer.logger.Error("save response head", zap.Error(err), zap.String("id", w.traceID))
+			w.storage = nil
+		}
+	}
 	w.ResponseWriter.WriteHeader(status)
 }
 
@@ -170,19 +204,15 @@ func (w *teeResponseWriter) ObserveStatus(code int) {
 
 func (w *teeResponseWriter) Write(p []byte) (int, error) {
 	if w.status == 0 {
-		w.status = http.StatusOK
+		w.WriteHeader(http.StatusOK)
 	}
-	if w.buf.Len() < maxCapture {
-		room := maxCapture - w.buf.Len()
-		if len(p) > room {
-			w.buf.Write(p[:room])
-			w.truncated = true
-		} else {
-			w.buf.Write(p)
+	if w.storage != nil {
+		if err := w.storage.Save(nil, w.traceID, w.stage, false, p); err != nil {
+			w.tracer.logger.Error("save response chunk", zap.Error(err), zap.String("id", w.traceID))
+			w.storage = nil // stop tracing, keep proxying
 		}
-	} else {
-		w.truncated = true
 	}
+	w.written += len(p)
 	return w.ResponseWriter.Write(p)
 }
 
@@ -192,30 +222,10 @@ func (w *teeResponseWriter) Flush() {
 	}
 }
 
-// sanitizeHeaders strips credentials before persisting a trace.
-func sanitizeHeaders(h http.Header) http.Header {
-	out := h.Clone()
-	if out.Get("Authorization") != "" {
-		out.Set("Authorization", redactKey(out.Get("Authorization")))
-	}
-	if out.Get("X-Api-Key") != "" {
-		out.Set("X-Api-Key", redactKey(out.Get("X-Api-Key")))
-	}
-	return out
-}
-
-// redactKey keeps only the first 4 and last 4 characters.
-func redactKey(v string) string {
-	if len(v) <= 12 {
-		return "****"
-	}
-	return v[:4] + "..." + v[len(v)-4:]
-}
-
 func newTraceID() string {
-	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
+	var b []byte = make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
 		return strconv.FormatInt(time.Now().UnixNano(), 36)
 	}
-	return hex.EncodeToString(b[:])
+	return hex.EncodeToString(b)
 }

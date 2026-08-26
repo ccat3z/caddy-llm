@@ -4,8 +4,8 @@
 package trace
 
 import (
-	"bufio"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -19,6 +19,7 @@ import (
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"go.uber.org/zap"
+	_ "modernc.org/sqlite"
 )
 
 func init() {
@@ -26,15 +27,15 @@ func init() {
 	caddy.RegisterModule(TraceAPI{})
 }
 
-// Store is the tracer app: a caddy.App that persists trace entries to an
-// append-only JSONL file and serves queries.
+// Store is the tracer app: a caddy.App persisting raw, replayable HTTP
+// exchanges to rolling files with a SQLite index.
 type Store struct {
-	// Dir is the directory holding traces.jsonl. Default: "llm-traces" in the
-	// current working directory.
+	// Dir is the directory holding the raw history files and index.db.
+	// Default: "llm-traces" in the current working directory.
 	Dir string `json:"dir,omitempty"`
 
 	logger *zap.Logger
-	disk   *diskStore
+	db     *rawStore
 }
 
 // CaddyModule returns the Caddy module information.
@@ -54,16 +55,16 @@ func (a *Store) Provision(ctx caddy.Context) error {
 	return nil
 }
 
-// Start opens (or creates) the trace log and builds the in-memory index.
+// Start opens the index database and a fresh history file.
 func (a *Store) Start() error {
-	a.disk = newDiskStore(filepath.Join(a.Dir, "traces.jsonl"))
-	return a.disk.open()
+	a.db = newRawStore(a.Dir)
+	return a.db.open()
 }
 
-// Stop closes the trace log.
+// Stop closes the store.
 func (a *Store) Stop() error {
-	if a.disk != nil {
-		return a.disk.close()
+	if a.db != nil {
+		return a.db.close()
 	}
 	return nil
 }
@@ -76,196 +77,392 @@ var (
 
 // Storage returns the underlying storage implementation (used by the tracer
 // handler and the traces API).
-func (a *Store) Storage() storage { return a.disk }
+func (a *Store) Storage() storage { return a.db }
 
-// Entry is one captured request/response exchange at one chain stage.
-type Entry struct {
-	ID              string      `json:"id"`
-	Stage           string      `json:"stage"`
-	Timestamp       time.Time   `json:"timestamp"`
-	Method          string      `json:"method"`
-	Path            string      `json:"path"`
-	RequestHeaders  http.Header `json:"request_headers,omitempty"`
-	RequestBody     []byte      `json:"request_body,omitempty"`
-	Status          int         `json:"status,omitempty"`
-	ResponseHeaders http.Header `json:"response_headers,omitempty"`
-	ResponseBody    []byte      `json:"response_body,omitempty"`
-	DurationMS      int64       `json:"duration_ms,omitempty"`
-	Truncated       bool        `json:"truncated,omitempty"`
+// RequestSummary is the list-view projection of one completed traced
+// exchange (one row of llm_requests).
+type RequestSummary struct {
+	TraceID    string    `json:"trace_id"`
+	TraceName  string    `json:"trace_name"`
+	Timestamp  time.Time `json:"timestamp"`
+	DurationMS int64     `json:"duration_ms,omitempty"`
+	Status     int       `json:"status,omitempty"`
+	ReqBytes   int       `json:"req_bytes"`
+	RespBytes  int       `json:"resp_bytes"`
 }
 
-// EntrySummary is the list-view projection of an Entry (no bodies).
-type EntrySummary struct {
-	ID         string    `json:"id"`
-	Stage      string    `json:"stage"`
-	Timestamp  time.Time `json:"timestamp"`
-	Method     string    `json:"method"`
-	Path       string    `json:"path"`
-	Status     int       `json:"status,omitempty"`
-	DurationMS int64     `json:"duration_ms,omitempty"`
-	Truncated  bool      `json:"truncated,omitempty"`
-	ReqBytes   int       `json:"request_bytes"`
-	RespBytes  int       `json:"response_bytes"`
+// RequestDetail is a full exchange: the aggregated metadata plus the raw,
+// replayable HTTP message bytes of both directions.
+type RequestDetail struct {
+	RequestSummary
+	Request  []byte `json:"request_raw"`  // full request message: request-line + headers + body
+	Response []byte `json:"response_raw"` // full response message: status line + headers + body
 }
 
 // Query filters a List call.
 type Query struct {
-	Stage  string
+	Name   string
 	Limit  int
 	Offset int
 }
 
-// Store persists and queries trace entries.
+// storage persists and queries traced exchanges. Raw message bytes are
+// appended to rolling history files; all positioning and aggregate metadata
+// live in SQLite.
 type storage interface {
-	Append(ctx context.Context, e *Entry) error
-	List(ctx context.Context, q Query) ([]EntrySummary, error)
-	Get(ctx context.Context, id string) (*Entry, error)
+	// Save appends raw message bytes (any part of an HTTP message: the
+	// request/status line, headers, blank line, or body chunks) for one
+	// direction of one traced exchange. Repeated Saves with the same
+	// (traceID, name, isReq) continue the same on-disk segment; the first
+	// Save opens a raw_log_idx row, later ones only grow its size.
+	Save(ctx context.Context, traceID, name string, isReq bool, p []byte) error
+
+	// RecordRequest writes the aggregate row for a completed exchange.
+	RecordRequest(ctx context.Context, traceID, name string, ts time.Time, durMS, status, reqBytes, respBytes int) error
+
+	List(ctx context.Context, q Query) ([]RequestSummary, error)
+	Get(ctx context.Context, traceID, name string) (*RequestDetail, error)
 }
 
-// ---------- disk implementation ----------
+// ---------- raw file + sqlite index implementation ----------
 
-type diskStore struct {
-	path  string
-	mu    sync.Mutex
-	file  *os.File
-	index []indexEntry // ordered by append time
-	byID  map[string]int
+// rotateSize is the size threshold at which a new history file is opened.
+const rotateSize = 100 << 20 // 100MB
+
+// rawStore appends raw message bytes to rolling history-<ts>.raw files and
+// tracks every segment in SQLite.
+type rawStore struct {
+	dir string
+
+	mu sync.Mutex
+	db *sql.DB
+
+	// active is the file currently appended to.
+	active     *os.File
+	activeName string
+	// activeSize is its current byte size (tracked, not stat'ed).
+	activeSize int64
+	// segments maps a logical exchange direction to its open raw_log_idx
+	// row, so repeated Saves continue the same segment.
+	segments map[segmentKey]segmentPos
+	// readers caches read handles per history file.
+	readers map[string]*os.File
 }
 
-type indexEntry struct {
-	id     string
-	stage  string
-	offset int64
-	size   int64
+// rawPiece locates one physical segment of a message.
+type rawPiece struct {
+	file         string
+	offset, size int64
+	isReq        bool
 }
 
-func newDiskStore(path string) *diskStore {
-	return &diskStore{path: path, byID: map[string]int{}}
+type segmentKey struct {
+	traceID, name string
+	isReq         bool
 }
 
-func (d *diskStore) open() error {
-	if err := os.MkdirAll(filepath.Dir(d.path), 0o755); err != nil {
+type segmentPos struct {
+	idxID  int64 // raw_log_idx.id
+	offset int64 // bytes already written for this segment
+}
+
+func newRawStore(dir string) *rawStore {
+	return &rawStore{
+		dir:      dir,
+		segments: map[segmentKey]segmentPos{},
+		readers:  map[string]*os.File{},
+	}
+}
+
+func (s *rawStore) open() error {
+	if err := os.MkdirAll(s.dir, 0o755); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(d.path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644)
+	db, err := sql.Open("sqlite", filepath.Join(s.dir, "index.db"))
 	if err != nil {
 		return err
 	}
-	d.file = f
-	// Build index by scanning existing lines.
-	scan := bufio.NewScanner(f)
-	scan.Buffer(make([]byte, 0, 1024*1024), 256*1024*1024)
-	var offset int64
-	for scan.Scan() {
-		n := int64(len(scan.Bytes())) + 1 // + newline
-		var e struct {
-			ID    string `json:"id"`
-			Stage string `json:"stage"`
+	// WAL keeps queries from blocking the write path.
+	for _, pragma := range []string{
+		`PRAGMA journal_mode=WAL`,
+		`PRAGMA synchronous=NORMAL`,
+	} {
+		if _, err := db.Exec(pragma); err != nil {
+			db.Close()
+			return err
 		}
-		if err := json.Unmarshal(scan.Bytes(), &e); err == nil && e.ID != "" {
-			d.index = append(d.index, indexEntry{id: e.ID, stage: e.Stage, offset: offset, size: n})
-			d.byID[e.ID] = len(d.index) - 1
-		}
-		offset += n
 	}
-	return scan.Err()
+	s.db = db
+	if err := s.createTables(); err != nil {
+		return err
+	}
+	return s.rotate() // open the first active file
 }
 
-func (d *diskStore) close() error {
-	if d.file != nil {
-		return d.file.Close()
-	}
-	return nil
+func (s *rawStore) createTables() error {
+	const schema = `
+CREATE TABLE IF NOT EXISTS raw_log_idx (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    trace_id    TEXT,
+    trace_name  TEXT,
+    ts          TIMESTAMP,
+    file        TEXT,
+    offset      INTEGER,
+    size        INTEGER,
+    is_req      INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_raw_trace ON raw_log_idx(trace_id, trace_name);
+CREATE TABLE IF NOT EXISTS llm_requests (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    trace_id    TEXT,
+    trace_name  TEXT,
+    ts          TIMESTAMP,
+    dur_ms      INTEGER,
+    status      INTEGER,
+    req_bytes   INTEGER,
+    resp_bytes  INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_requests_name ON llm_requests(trace_name);`
+	_, err := s.db.Exec(schema)
+	return err
 }
 
-func (d *diskStore) Append(_ context.Context, e *Entry) error {
-	line, err := json.Marshal(e)
+func (s *rawStore) close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var firstErr error
+	if s.active != nil {
+		firstErr = s.active.Close()
+		s.active = nil
+	}
+	for _, f := range s.readers {
+		f.Close()
+	}
+	s.readers = nil
+	if err := s.db.Close(); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	return firstErr
+}
+
+// rotate closes the active file and opens a fresh one. Callers hold s.mu.
+func (s *rawStore) rotate() error {
+	if s.active != nil {
+		if err := s.active.Close(); err != nil {
+			return err
+		}
+		s.active = nil
+	}
+	name := fmt.Sprintf("history-%d.raw", time.Now().UnixNano())
+	f, err := os.OpenFile(filepath.Join(s.dir, name), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return err
 	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if _, err := d.file.Write(append(line, '\n')); err != nil {
-		return err
-	}
-	// stat for offset would be racy; track from index
-	var offset int64
-	if n := len(d.index); n > 0 {
-		last := d.index[n-1]
-		offset = last.offset + last.size
-	}
-	d.index = append(d.index, indexEntry{id: e.ID, stage: e.Stage, offset: offset, size: int64(len(line)) + 1})
-	d.byID[e.ID] = len(d.index) - 1
+	s.active = f
+	s.activeName = name
+	s.activeSize = 0
 	return nil
 }
 
-func (d *diskStore) List(_ context.Context, q Query) ([]EntrySummary, error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	out := []EntrySummary{}
-	// Newest first.
-	for i := len(d.index) - 1; i >= 0; i-- {
-		ie := d.index[i]
-		if q.Stage != "" && ie.stage != q.Stage {
-			continue
+// Save implements storage.
+func (s *rawStore) Save(_ context.Context, traceID, name string, isReq bool, p []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key := segmentKey{traceID, name, isReq}
+	seg, continuing := s.segments[key]
+
+	// Rotate when the active file exceeds the threshold; the in-flight
+	// segment is sealed and continues as a new row in the fresh file.
+	if s.activeSize > rotateSize {
+		if continuing {
+			// seal the current row; a new row opens below for the remainder
+			delete(s.segments, key)
+			continuing = false
 		}
-		if q.Offset > 0 {
-			q.Offset--
-			continue
+		if err := s.rotate(); err != nil {
+			return err
 		}
-		e, err := d.readAt(ie)
+	}
+
+	segStart := s.activeSize // segment starts at the current end of file
+	if _, err := s.active.Write(p); err != nil {
+		return err
+	}
+	s.activeSize += int64(len(p))
+
+	if !continuing {
+		// A fresh segment (rotated continuation or first write): its size
+		// counter starts over; sealed rows keep their own totals.
+		seg = segmentPos{}
+	}
+	seg.offset += int64(len(p))
+	s.segments[key] = seg // keep the write point current for the next Save
+
+	if !continuing {
+		res, err := s.db.Exec(
+			`INSERT INTO raw_log_idx (trace_id, trace_name, ts, file, offset, size, is_req) VALUES (?,?,?,?,?,?,?)`,
+			traceID, name, time.Now().UTC(), s.activeName, segStart, seg.offset, boolInt(isReq))
 		if err != nil {
-			continue
+			return err
 		}
-		out = append(out, EntrySummary{
-			ID: e.ID, Stage: e.Stage, Timestamp: e.Timestamp, Method: e.Method,
-			Path: e.Path, Status: e.Status, DurationMS: e.DurationMS,
-			Truncated: e.Truncated,
-			ReqBytes:  len(e.RequestBody), RespBytes: len(e.ResponseBody),
-		})
-		if q.Limit > 0 && len(out) >= q.Limit {
-			break
+		idxID, err := res.LastInsertId()
+		if err != nil {
+			return err
 		}
+		seg.idxID = idxID
+		s.segments[key] = seg
+		return nil
+	}
+	_, err := s.db.Exec(`UPDATE raw_log_idx SET size=? WHERE id=?`, seg.offset, seg.idxID)
+	return err
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// RecordRequest implements storage.
+func (s *rawStore) RecordRequest(_ context.Context, traceID, name string, ts time.Time, durMS, status, reqBytes, respBytes int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(
+		`INSERT INTO llm_requests (trace_id, trace_name, ts, dur_ms, status, req_bytes, resp_bytes) VALUES (?,?,?,?,?,?,?)`,
+		traceID, name, ts.UTC(), durMS, status, reqBytes, respBytes)
+	return err
+}
+
+// List implements storage.
+func (s *rawStore) List(_ context.Context, q Query) ([]RequestSummary, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	query := `SELECT trace_id, trace_name, ts, dur_ms, status, req_bytes, resp_bytes FROM llm_requests`
+	args := []any{}
+	if q.Name != "" {
+		query += ` WHERE trace_name = ?`
+		args = append(args, q.Name)
+	}
+	query += ` ORDER BY id DESC`
+	if q.Limit > 0 {
+		query += ` LIMIT ? OFFSET ?`
+		args = append(args, q.Limit, q.Offset)
+	}
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []RequestSummary{}
+	for rows.Next() {
+		var r RequestSummary
+		if err := rows.Scan(&r.TraceID, &r.TraceName, &r.Timestamp, &r.DurationMS, &r.Status, &r.ReqBytes, &r.RespBytes); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// Get implements storage.
+func (s *rawStore) Get(_ context.Context, traceID, name string) (*RequestDetail, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	det := &RequestDetail{}
+	// Aggregate row (may be missing for incomplete streams).
+	aggErr := s.db.QueryRow(
+		`SELECT trace_id, trace_name, ts, dur_ms, status, req_bytes, resp_bytes FROM llm_requests
+		 WHERE trace_id=? AND trace_name=? ORDER BY id DESC LIMIT 1`, traceID, name).
+		Scan(&det.TraceID, &det.TraceName, &det.Timestamp, &det.DurationMS, &det.Status, &det.ReqBytes, &det.RespBytes)
+	if aggErr != nil && aggErr != sql.ErrNoRows {
+		return nil, aggErr
+	}
+
+	rows, err := s.db.Query(
+		`SELECT file, offset, size, is_req FROM raw_log_idx
+		 WHERE trace_id=? AND trace_name=? ORDER BY id`, traceID, name)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var reqParts, respParts []rawPiece
+	for rows.Next() {
+		var p rawPiece
+		var isReq int
+		if err := rows.Scan(&p.file, &p.offset, &p.size, &isReq); err != nil {
+			return nil, err
+		}
+		p.isReq = isReq == 1
+		if p.isReq {
+			reqParts = append(reqParts, p)
+		} else {
+			respParts = append(respParts, p)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if aggErr == sql.ErrNoRows && len(reqParts) == 0 && len(respParts) == 0 {
+		return nil, os.ErrNotExist
+	}
+
+	if det.Request, err = s.readParts(reqParts); err != nil {
+		return nil, err
+	}
+	if det.Response, err = s.readParts(respParts); err != nil {
+		return nil, err
+	}
+	return det, nil
+}
+
+// readParts concatenates the raw bytes of the given segments. Callers hold s.mu.
+func (s *rawStore) readParts(parts []rawPiece) ([]byte, error) {
+	if len(parts) == 0 {
+		return nil, nil
+	}
+	var out []byte
+	for _, p := range parts {
+		f, err := s.reader(p.file)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue // externally deleted history file: skip its bytes
+			}
+			return nil, err
+		}
+		buf := make([]byte, p.size)
+		if _, err := f.ReadAt(buf, p.offset); err != nil {
+			return nil, err
+		}
+		out = append(out, buf...)
 	}
 	return out, nil
 }
 
-// Get returns one entry by ID.
-func (d *diskStore) Get(_ context.Context, id string) (*Entry, error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	i, ok := d.byID[id]
-	if !ok {
-		return nil, os.ErrNotExist
+// reader returns a cached read handle for a history file. Callers hold s.mu.
+func (s *rawStore) reader(name string) (*os.File, error) {
+	if f, ok := s.readers[name]; ok {
+		return f, nil
 	}
-	return d.readAt(d.index[i])
-}
-
-func (d *diskStore) readAt(ie indexEntry) (*Entry, error) {
-	buf := make([]byte, ie.size)
-	if _, err := d.file.ReadAt(buf, ie.offset); err != nil {
+	f, err := os.Open(filepath.Join(s.dir, name))
+	if err != nil {
 		return nil, err
 	}
-	var e Entry
-	if err := json.Unmarshal(trimNewline(buf), &e); err != nil {
-		return nil, err
-	}
-	return &e, nil
+	s.readers[name] = f
+	return f, nil
 }
 
-func trimNewline(b []byte) []byte {
-	for len(b) > 0 && b[len(b)-1] == '\n' {
-		b = b[:len(b)-1]
-	}
-	return b
-}
-
-var _ storage = (*diskStore)(nil)
+var _ storage = (*rawStore)(nil)
 
 // ---------- query API handler ----------
 
-// TraceAPI serves the trace query API: GET /llm/traces (list) and
-// GET /llm/traces/{id} (full entry).
+// TraceAPI serves the trace query API on whatever path the route is mounted
+// at (the prefix is stripped upstream, e.g. by rewrite's strip_path_prefix):
+// "" → list, "{traceID}/{name}" → one exchange.
 type TraceAPI struct {
 	logger *zap.Logger
 	app    *Store
@@ -284,7 +481,7 @@ func (t *TraceAPI) Provision(ctx caddy.Context) error {
 	t.logger = ctx.Logger()
 	appIface, err := ctx.App("llm_tracer")
 	if err != nil {
-		return fmt.Errorf("llm_tracer_api requires the llm_tracer global option: %w", err)
+		return fmt.Errorf("llm_tracer_api requires the llm_tracer app: %w", err)
 	}
 	t.app = appIface.(*Store)
 	return nil
@@ -297,14 +494,15 @@ func (t *TraceAPI) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyh
 	if r.Method != http.MethodGet {
 		return next.ServeHTTP(w, r)
 	}
-	path := strings.TrimPrefix(r.URL.Path, "/llm/traces")
-	path = strings.Trim(path, "/")
+	// The route prefix (e.g. /llm/traces) is stripped before this handler;
+	// what remains is "" (list) or "{traceID}/{name}".
+	rest := strings.Trim(r.URL.Path, "/")
 
 	w.Header().Set("Content-Type", "application/json")
 
-	if path == "" {
+	if rest == "" {
 		q := Query{
-			Stage:  r.URL.Query().Get("stage"),
+			Name:   r.URL.Query().Get("stage"),
 			Limit:  intQuery(r, "limit", 100),
 			Offset: intQuery(r, "offset", 0),
 		}
@@ -315,7 +513,13 @@ func (t *TraceAPI) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyh
 		return json.NewEncoder(w).Encode(entries)
 	}
 
-	e, err := t.app.Storage().Get(r.Context(), path)
+	parts := strings.SplitN(rest, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"expected /{traceID}/{traceName}"}`))
+		return nil
+	}
+	e, err := t.app.Storage().Get(r.Context(), parts[0], parts[1])
 	if err != nil {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte(`{"error":"not found"}`))

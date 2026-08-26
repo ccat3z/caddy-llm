@@ -7,174 +7,287 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
 
-func newTestStore(t *testing.T) (*diskStore, string) {
+func newTestStore(t *testing.T) (*rawStore, string) {
 	t.Helper()
 	dir := t.TempDir()
-	d := newDiskStore(filepath.Join(dir, "traces.jsonl"))
-	if err := d.open(); err != nil {
+	s := newRawStore(dir)
+	if err := s.open(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = d.close() })
-	return d, dir
+	t.Cleanup(func() { _ = s.close() })
+	return s, dir
 }
 
-func entry(id, stage string, status int) *Entry {
-	return &Entry{
-		ID: id, Stage: stage, Timestamp: time.Now().UTC(),
-		Method: "POST", Path: "/v1/messages",
-		RequestBody: []byte(`{"a":1}`), Status: status,
-		ResponseBody: []byte(`{"b":2}`), DurationMS: 42,
+// reqMsg builds a minimal replayable request message.
+func reqMsg(body string) []byte {
+	return []byte("POST /v1/messages HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n\r\n" + body)
+}
+
+// respHead builds a response status line + headers + blank line.
+func respHead(status int) []byte {
+	return []byte("HTTP/1.1 " + itoa(status) + " X\r\nContent-Type: text/event-stream\r\n\r\n")
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
 	}
+	var b []byte
+	for n > 0 {
+		b = append([]byte{byte('0' + n%10)}, b...)
+		n /= 10
+	}
+	return string(b)
 }
 
-func TestDiskStoreRoundTrip(t *testing.T) {
-	d, _ := newTestStore(t)
+func TestRawStoreRoundTrip(t *testing.T) {
+	s, _ := newTestStore(t)
 	ctx := context.Background()
 
-	if err := d.Append(ctx, entry("t1", "claude", 200)); err != nil {
+	// Two exchanges; one streaming (multiple Saves).
+	if err := s.Save(ctx, "t1", "claude", true, reqMsg(`{"a":1}`)); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.Append(ctx, entry("t2", "openai", 200)); err != nil {
+	if err := s.Save(ctx, "t1", "claude", false, respHead(200)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Save(ctx, "t1", "claude", false, []byte("event: a\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Save(ctx, "t1", "claude", false, []byte("event: b\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordRequest(ctx, "t1", "claude", time.Now(), 42, 200, len(`{"a":1}`), 30); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Save(ctx, "t2", "openai", true, reqMsg(`{"b":2}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordRequest(ctx, "t2", "openai", time.Now(), 7, 200, len(`{"b":2}`), 0); err != nil {
 		t.Fatal(err)
 	}
 
-	got, err := d.Get(ctx, "t1")
+	// Get: assembled replayable messages, both directions.
+	got, err := s.Get(ctx, "t1", "claude")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Stage != "claude" || got.Status != 200 || string(got.RequestBody) != `{"a":1}` {
-		t.Errorf("entry = %+v", got)
+	if !strings.HasPrefix(string(got.Request), "POST /v1/messages HTTP/1.1\r\n") {
+		t.Errorf("request head = %q", got.Request[:40])
+	}
+	if !strings.HasSuffix(string(got.Request), `{"a":1}`) {
+		t.Errorf("request body = %q", got.Request)
+	}
+	if !strings.HasPrefix(string(got.Response), "HTTP/1.1 200 X\r\n") {
+		t.Errorf("response head = %q", got.Response[:20])
+	}
+	if !strings.HasSuffix(string(got.Response), "event: a\nevent: b\n") {
+		t.Errorf("streamed chunks lost: %q", got.Response)
+	}
+	if got.Status != 200 || got.ReqBytes != len(`{"a":1}`) || got.RespBytes != 30 {
+		t.Errorf("detail = %+v", got.RequestSummary)
 	}
 
-	// Newest first.
-	list, err := d.List(ctx, Query{})
+	// List: newest first.
+	list, err := s.List(ctx, Query{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list) != 2 || list[0].ID != "t2" {
+	if len(list) != 2 || list[0].TraceID != "t2" {
 		t.Errorf("list = %+v", list)
 	}
 
 	// Stage filter.
-	list, err = d.List(ctx, Query{Stage: "claude"})
+	list, err = s.List(ctx, Query{Name: "claude"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list) != 1 || list[0].ID != "t1" {
+	if len(list) != 1 || list[0].TraceID != "t1" {
 		t.Errorf("filtered list = %+v", list)
 	}
 
-	// Limit/offset.
-	list, _ = d.List(ctx, Query{Limit: 1})
-	if len(list) != 1 || list[0].ID != "t2" {
-		t.Errorf("limited list = %+v", list)
-	}
-
-	if _, err := d.Get(ctx, "missing"); err != os.ErrNotExist {
-		t.Errorf("missing Get err = %v", err)
+	// Missing id.
+	if _, err := s.Get(ctx, "nope", "claude"); err != os.ErrNotExist {
+		t.Errorf("missing = %v, want ErrNotExist", err)
 	}
 }
 
-func TestDiskStoreReindex(t *testing.T) {
-	d, dir := newTestStore(t)
+// TestRawStoreIncomplete: raw segments without a RecordRequest row are still
+// retrievable (crash mid-stream keeps what arrived).
+func TestRawStoreIncomplete(t *testing.T) {
+	s, _ := newTestStore(t)
 	ctx := context.Background()
-	if err := d.Append(ctx, entry("persist", "openai", 500)); err != nil {
-		t.Fatal(err)
-	}
-	_ = d.close()
 
-	// Reopen: index rebuilt from disk.
-	d2 := newDiskStore(filepath.Join(dir, "traces.jsonl"))
-	if err := d2.open(); err != nil {
+	if err := s.Save(ctx, "t1", "glm", false, respHead(200)); err != nil {
 		t.Fatal(err)
 	}
-	defer d2.close()
-	got, err := d2.Get(ctx, "persist")
+	if err := s.Save(ctx, "t1", "glm", false, []byte("event: one\n")); err != nil {
+		t.Fatal(err)
+	}
+	// no RecordRequest — simulated crash
+
+	got, err := s.Get(ctx, "t1", "glm")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Stage != "openai" || got.Status != 500 {
-		t.Errorf("reopened entry = %+v", got)
+	if !strings.Contains(string(got.Response), "event: one\n") {
+		t.Errorf("incomplete stream bytes = %q", got.Response)
 	}
-	// Append after reopen continues offsets correctly.
-	if err := d2.Append(ctx, entry("after", "claude", 200)); err != nil {
+	if got.Status != 0 {
+		t.Errorf("status should be zero-valued, got %d", got.Status)
+	}
+
+	// But it does not appear in the list.
+	list, _ := s.List(ctx, Query{})
+	if len(list) != 0 {
+		t.Errorf("incomplete exchange listed: %+v", list)
+	}
+}
+
+// TestRawStoreRotate: crossing the size threshold seals the current segment
+// and continues in a new file; Get stitches both parts.
+func TestRawStoreRotate(t *testing.T) {
+	s, dir := newTestStore(t)
+	ctx := context.Background()
+
+	// Shrink the threshold for the test.
+	s.mu.Lock()
+	firstFile := s.activeName
+	s.mu.Unlock()
+
+	// Write chunks big enough that the third Save triggers rotation
+	// (rotation happens at Save time when the file already exceeds the
+	// threshold).
+	big := strings.Repeat("x", rotateSize+1)
+	if err := s.Save(ctx, "t1", "glm", false, respHead(200)); err != nil {
 		t.Fatal(err)
 	}
-	list, _ := d2.List(ctx, Query{})
-	if len(list) != 2 || list[0].ID != "after" {
-		t.Errorf("post-reopen list = %+v", list)
+	if err := s.Save(ctx, "t1", "glm", false, []byte(big)); err != nil {
+		t.Fatal(err)
+	}
+	// This Save lands in a fresh file (previous one exceeded the threshold).
+	if err := s.Save(ctx, "t1", "glm", false, []byte("tail")); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	secondFile := s.activeName
+	s.mu.Unlock()
+	if secondFile == firstFile {
+		t.Fatalf("no rotation: still %s", firstFile)
+	}
+	if err := s.RecordRequest(ctx, "t1", "glm", time.Now(), 1, 200, 0, len(big)+len("tail")); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.Get(ctx, "t1", "glm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := string(respHead(200)) + big + "tail"
+	if string(got.Response) != want {
+		t.Errorf("rotated stitch: got %d bytes, want %d", len(got.Response), len(want))
+	}
+
+	// Two history files on disk.
+	entries, _ := filepath.Glob(filepath.Join(dir, "history-*.raw"))
+	if len(entries) < 2 {
+		t.Errorf("expected >=2 history files, got %v", entries)
+	}
+}
+
+// TestRawStoreReopen: a new store instance over the same dir sees old data
+// via the SQLite index (fresh active file, old files read-only).
+func TestRawStoreReopen(t *testing.T) {
+	dir := t.TempDir()
+	s := newRawStore(dir)
+	if err := s.open(); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := s.Save(ctx, "t1", "claude", true, reqMsg(`{"a":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Save(ctx, "t1", "claude", false, respHead(200)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Save(ctx, "t1", "claude", false, []byte("hello")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordRequest(ctx, "t1", "claude", time.Now(), 5, 200, 7, 5); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s2 := newRawStore(dir)
+	if err := s2.open(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s2.close() })
+
+	list, err := s2.List(ctx, Query{})
+	if err != nil || len(list) != 1 {
+		t.Fatalf("reopen list = %v err=%v", list, err)
+	}
+	got, err := s2.Get(ctx, "t1", "claude")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(string(got.Response), "hello") {
+		t.Errorf("reopen response = %q", got.Response)
 	}
 }
 
 func TestTraceAPIServeHTTP(t *testing.T) {
-	d, _ := newTestStore(t)
+	s, _ := newTestStore(t)
 	ctx := context.Background()
-	if err := d.Append(ctx, entry("t1", "claude", 200)); err != nil {
+	if err := s.Save(ctx, "t1", "claude", true, reqMsg(`abcdefg`)); err != nil {
 		t.Fatal(err)
 	}
-	api := &TraceAPI{app: &Store{disk: d}}
+	if err := s.RecordRequest(ctx, "t1", "claude", time.Now(), 3, 200, 7, 0); err != nil {
+		t.Fatal(err)
+	}
+	api := &TraceAPI{app: &Store{db: s}}
 
-	// List.
-	r := httptest.NewRequest("GET", "/llm/traces", nil)
-	w := httptest.NewRecorder()
-	if err := api.ServeHTTP(w, r, nopHandler{}); err != nil {
-		t.Fatal(err)
-	}
-	var list []EntrySummary
-	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil {
-		t.Fatalf("list body: %v (%s)", err, w.Body)
-	}
-	if len(list) != 1 || list[0].ID != "t1" || list[0].ReqBytes != 7 {
-		t.Errorf("list = %+v", list)
+	// The route prefix is stripped upstream; the handler sees "" or ids.
+	rec := httptest.NewRecorder()
+	api.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil), nopHandler{})
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"trace_id":"t1"`) {
+		t.Errorf("list = %d %s", rec.Code, rec.Body.String())
 	}
 
-	// Get by id.
-	r = httptest.NewRequest("GET", "/llm/traces/t1", nil)
-	w = httptest.NewRecorder()
-	if err := api.ServeHTTP(w, r, nopHandler{}); err != nil {
-		t.Fatal(err)
+	rec = httptest.NewRecorder()
+	api.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/t1/claude", nil), nopHandler{})
+	var detail struct {
+		RequestRaw []byte `json:"request_raw"`
 	}
-	var e Entry
-	if err := json.Unmarshal(w.Body.Bytes(), &e); err != nil {
-		t.Fatalf("entry body: %v (%s)", err, w.Body)
+	if err := json.Unmarshal(rec.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("get decode: %v (%s)", err, rec.Body.String())
 	}
-	if e.ID != "t1" || string(e.ResponseBody) != `{"b":2}` {
-		t.Errorf("entry = %+v", e)
+	if rec.Code != 200 || !strings.Contains(string(detail.RequestRaw), "abcdefg") {
+		t.Errorf("get = %d %s", rec.Code, rec.Body.String())
 	}
 
-	// Missing id.
-	r = httptest.NewRequest("GET", "/llm/traces/nope", nil)
-	w = httptest.NewRecorder()
-	if err := api.ServeHTTP(w, r, nopHandler{}); err != nil {
-		t.Fatal(err)
-	}
-	if w.Code != http.StatusNotFound {
-		t.Errorf("missing id status = %d", w.Code)
+	rec = httptest.NewRecorder()
+	api.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/nope/claude", nil), nopHandler{})
+	if rec.Code != 404 {
+		t.Errorf("missing = %d", rec.Code)
 	}
 
 	// Non-GET passes through.
-	r = httptest.NewRequest("POST", "/llm/traces", nil)
-	w = httptest.NewRecorder()
-	var called bool
-	if err := api.ServeHTTP(w, r, calledHandler{&called}); err != nil {
-		t.Fatal(err)
-	}
-	if !called {
-		t.Error("POST should pass through")
+	rec = httptest.NewRecorder()
+	api.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/", nil), nopHandler{})
+	if rec.Code != 200 {
+		t.Errorf("POST should pass through, got %d %q", rec.Code, rec.Body.String())
 	}
 }
 
 type nopHandler struct{}
 
-func (nopHandler) ServeHTTP(http.ResponseWriter, *http.Request) error { return nil }
-
-type calledHandler struct{ called *bool }
-
-func (c calledHandler) ServeHTTP(http.ResponseWriter, *http.Request) error {
-	*c.called = true
-	return nil
-}
+func (nopHandler) ServeHTTP(_ http.ResponseWriter, _ *http.Request) error { return nil }

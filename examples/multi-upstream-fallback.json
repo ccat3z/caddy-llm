@@ -1,113 +1,135 @@
 {
-	"admin": {
-		"listen": "localhost:2019"
-	},
-	"apps": {
-		"llm_tracer": {
-			"dir": "/var/lib/caddy/llm-traces"
-		},
-		"http": {
-			"http_port": 8080,
-			"servers": {
-				"claude-proxy": {
-					"listen": [":8080"],
-					"automatic_https": {
-						"disable": true
-					},
-					"routes": [
-						{
-							"match": [
-								{
-									"path": ["/v1/messages"],
-									"method": ["POST"]
-								}
-							],
-							"handle": [
-								{
-									"handler": "llm_route",
-									"models": [
-										{ "pattern": "native/(.*)", "replace": "$1" },
-										{ "pattern": "glm-5.2" }
-									],
-									"sub": {
-										"handler": "subroute",
-										"routes": [
-											{
-												"handle": [
-													{
-														"handler": "rewrite",
-														"uri": "/v2/chat/completions"
-													},
-													{
-														"handler": "reverse_proxy",
-														"upstreams": [
-															{
-																"dial": "native-llm.example.com:443"
-															}
-														]
-													}
-												]
-											}
-										]
-									}
-								},
-								{
-									"handler": "llm_route",
-									"models": [
-										{ "pattern": "glm/(.*)", "replace": "$1" },
-										{ "pattern": "glm-5.2" }
-									],
-									"sub": {
-										"handler": "subroute",
-										"routes": [
-											{
-												"handle": [
-													{
-														"handler": "rewrite",
-														"uri": "/api/coding/paas/v4/chat/completions"
-													},
-													{
-														"handler": "claude2openai"
-													},
-													{
-														"handler": "trace",
-														"stage": "glm"
-													},
-													{
-														"handler": "reverse_proxy",
-														"upstreams": [
-															{
-																"dial": "open.bigmodel.cn:443"
-															}
-														]
-													}
-												]
-											}
-										]
-									}
-								},
-								{
-									"handler": "static_response",
-									"status_code": 404,
-									"body": "model not found or all upstreams failed"
-								}
-							]
-						},
-						{
-							"match": [
-								{
-									"path": ["/llm/traces*"]
-								}
-							],
-							"handle": [
-								{
-									"handler": "llm_tracer_api"
-								}
-							]
-						}
-					]
-				}
-			}
-		}
-	}
+  "admin": {
+    "listen": "localhost:2019"
+  },
+  "apps": {
+    "llm_tracer": {
+      "dir": "/var/lib/caddy/llm-traces"
+    },
+    "http": {
+      "http_port": 8080,
+      "servers": {
+        "claude-proxy": {
+          "listen": [
+            ":8080"
+          ],
+          "automatic_https": {
+            "disable": true
+          },
+          "routes": [
+            {
+              "match": [
+                {
+                  "path": [
+                    "/v1/messages"
+                  ],
+                  "method": [
+                    "POST"
+                  ]
+                }
+              ],
+              "handle": [
+                {
+                  "handler": "llm_route",
+                  "models": [
+                    {
+                      "pattern": "native/(.*)",
+                      "replace": "$1"
+                    },
+                    {
+                      "pattern": "glm-5.2"
+                    }
+                  ],
+                  "sub": {
+                    "handler": "subroute",
+                    "routes": [
+                      {
+                        "handle": [
+                          {
+                            "handler": "rewrite",
+                            "uri": "/v2/chat/completions"
+                          },
+                          {
+                            "handler": "reverse_proxy",
+                            "upstreams": [
+                              {
+                                "dial": "native-llm.example.com:443"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                },
+                {
+                  "handler": "llm_route",
+                  "models": [
+                    {
+                      "pattern": "glm/(.*)",
+                      "replace": "$1"
+                    },
+                    {
+                      "pattern": "glm-5.2"
+                    }
+                  ],
+                  "sub": {
+                    "handler": "subroute",
+                    "routes": [
+                      {
+                        "handle": [
+                          {
+                            "handler": "rewrite",
+                            "uri": "/api/coding/paas/v4/chat/completions"
+                          },
+                          {
+                            "handler": "claude2openai"
+                          },
+                          {
+                            "handler": "trace",
+                            "stage": "glm"
+                          },
+                          {
+                            "handler": "reverse_proxy",
+                            "upstreams": [
+                              {
+                                "dial": "open.bigmodel.cn:443"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                },
+                {
+                  "handler": "static_response",
+                  "status_code": 404,
+                  "body": "model not found or all upstreams failed"
+                }
+              ]
+            },
+            {
+              "match": [
+                {
+                  "path": [
+                    "/llm/traces*"
+                  ]
+                }
+              ],
+              "handle": [
+                {
+                  "handler": "rewrite",
+                  "strip_path_prefix": "/llm/traces"
+                },
+                {
+                  "handler": "llm_tracer_api"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  }
 }

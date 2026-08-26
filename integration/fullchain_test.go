@@ -65,7 +65,7 @@ func TestFullChain(t *testing.T) {
 		json.Unmarshal(lb, &entries)
 		mine = nil
 		for _, e := range entries {
-			if strings.HasPrefix(e["id"].(string), traceID) {
+			if e["trace_id"] == traceID {
 				mine = append(mine, e)
 			}
 		}
@@ -79,14 +79,14 @@ func TestFullChain(t *testing.T) {
 	}
 	stages := map[string]bool{}
 	for _, e := range mine {
-		stages[e["stage"].(string)] = true
+		stages[e["trace_name"].(string)] = true
 	}
 	if !stages["claude"] || !stages["openai"] {
 		t.Errorf("stages = %v", stages)
 	}
 
-	// Full entry bodies: claude stage saw Claude format, openai stage saw
-	// OpenAI format.
+	// Full exchange bodies: claude stage saw Claude format, openai stage saw
+	// OpenAI format (raw replayable HTTP messages, base64 in JSON).
 	get := func(id string) map[string]any {
 		gresp, err := http.Get(httpBase() + "/llm/traces/" + id)
 		if err != nil {
@@ -98,8 +98,6 @@ func TestFullChain(t *testing.T) {
 		json.Unmarshal(gb, &e)
 		return e
 	}
-	// Bodies are stored as JSON base64 ([]byte marshaling); decode and check
-	// each stage captured its own wire format.
 	b64 := func(v any) string {
 		s, _ := v.(string)
 		b, err := base64.StdEncoding.DecodeString(s)
@@ -109,25 +107,24 @@ func TestFullChain(t *testing.T) {
 		return string(b)
 	}
 	claudeEntry := get(traceID + "/claude")
-	if cb := b64(claudeEntry["request_body"]); !strings.Contains(cb, `"max_tokens":10`) || !strings.Contains(cb, `"content":"hi"`) {
-		t.Errorf("claude stage request_body = %s", cb)
+	if cb := b64(claudeEntry["request_raw"]); !strings.HasPrefix(cb, "POST /v1/messages HTTP/1.1\r\n") || !strings.Contains(cb, `"max_tokens":10`) {
+		t.Errorf("claude stage request_raw = %s", cb)
 	}
 	openaiEntry := get(traceID + "/openai")
-	if ob := b64(openaiEntry["request_body"]); !strings.Contains(ob, `"stream":false`) {
-		t.Errorf("openai stage request_body = %s", ob)
+	if ob := b64(openaiEntry["request_raw"]); !strings.Contains(ob, `"stream":false`) {
+		t.Errorf("openai stage request_raw = %s", ob)
 	}
 
-	// Persistence: traces.jsonl under the configured dir (async writes may
-	// lag; poll briefly).
+	// Persistence: SQLite index + raw history file under the configured dir.
 	deadline = time.Now().Add(3 * time.Second)
 	for {
-		data, err := os.ReadFile(filepath.Join(traceDir, "traces.jsonl"))
-		if err == nil && strings.Count(string(data), "\n") >= 2 {
-			break
+		if _, err := os.Stat(filepath.Join(traceDir, "index.db")); err == nil {
+			if matches, _ := filepath.Glob(filepath.Join(traceDir, "history-*.raw")); len(matches) > 0 {
+				break
+			}
 		}
 		if time.Now().After(deadline) {
-			data, _ := os.ReadFile(filepath.Join(traceDir, "traces.jsonl"))
-			t.Fatalf("traces.jsonl missing/incomplete in %s: %q", traceDir, data)
+			t.Fatalf("index.db / history-*.raw missing in %s", traceDir)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}

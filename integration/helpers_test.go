@@ -182,8 +182,11 @@ func jsonConfigWithTracer(dir, upstreamURL string) string {
 								},
 							},
 							map[string]any{
-								"match":  []any{map[string]any{"path": []string{"/llm/traces*"}}},
-								"handle": []any{map[string]any{"handler": "llm_tracer_api"}},
+								"match": []any{map[string]any{"path": []string{"/llm/traces*"}}},
+								"handle": []any{
+									map[string]any{"handler": "rewrite", "strip_path_prefix": "/llm/traces"},
+									map[string]any{"handler": "llm_tracer_api"},
+								},
 							},
 							handleRoute(respondHandler(404, "")),
 						},
