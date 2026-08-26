@@ -130,7 +130,10 @@ type storage interface {
 const rotateSize = 100 << 20 // 100MB
 
 // rawStore appends raw message bytes to rolling history-<ts>.raw files and
-// tracks every segment in SQLite.
+// tracks every write in SQLite: one row per physical write. A logical
+// message (one direction of one exchange) is any number of rows; Get
+// concatenates them in id order — concurrent streams interleaving in the
+// same file each keep their own bytes, and rotation needs no coordination.
 type rawStore struct {
 	dir string
 
@@ -142,9 +145,6 @@ type rawStore struct {
 	activeName string
 	// activeSize is its current byte size (tracked, not stat'ed).
 	activeSize int64
-	// segments maps a logical exchange direction to its open raw_log_idx
-	// row, so repeated Saves continue the same segment.
-	segments map[segmentKey]segmentPos
 	// readers caches read handles per history file.
 	readers map[string]*os.File
 }
@@ -156,21 +156,10 @@ type rawPiece struct {
 	isReq        bool
 }
 
-type segmentKey struct {
-	traceID, name string
-	isReq         bool
-}
-
-type segmentPos struct {
-	idxID  int64 // raw_log_idx.id
-	offset int64 // bytes already written for this segment
-}
-
 func newRawStore(dir string) *rawStore {
 	return &rawStore{
-		dir:      dir,
-		segments: map[segmentKey]segmentPos{},
-		readers:  map[string]*os.File{},
+		dir:     dir,
+		readers: map[string]*os.File{},
 	}
 }
 
@@ -269,52 +258,24 @@ func (s *rawStore) Save(_ context.Context, traceID, name string, isReq bool, p [
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	key := segmentKey{traceID, name, isReq}
-	_, continuing := s.segments[key]
-
-	// Rotate when the active file exceeds the threshold. Every open segment
-	// is sealed (its row keeps its bytes in the old file); whichever of them
-	// Saves again opens a fresh row in the new file. Clearing the whole map
-	// is what makes concurrent segments safe: leaving another exchange's
-	// entry in place would keep growing its old-file row while its bytes
-	// append to the new file (cross-request data corruption on Get).
+	// Rotate when the active file exceeds the threshold; the next write
+	// simply lands in the fresh file. No open-segment bookkeeping: every
+	// write is its own row, so nothing needs sealing.
 	if s.activeSize > rotateSize {
-		s.segments = map[segmentKey]segmentPos{}
-		continuing = false
 		if err := s.rotate(); err != nil {
 			return err
 		}
 	}
 
-	segStart := s.activeSize // segment starts at the current end of file
+	offset := s.activeSize
 	if _, err := s.active.Write(p); err != nil {
 		return err
 	}
 	s.activeSize += int64(len(p))
 
-	seg := segmentPos{offset: int64(len(p))}
-	if continuing {
-		seg = s.segments[key]
-		seg.offset += int64(len(p))
-	}
-	s.segments[key] = seg
-
-	if !continuing {
-		res, err := s.db.Exec(
-			`INSERT INTO raw_log_idx (trace_id, trace_name, ts, file, offset, size, is_req) VALUES (?,?,?,?,?,?,?)`,
-			traceID, name, time.Now().UTC(), s.activeName, segStart, seg.offset, boolInt(isReq))
-		if err != nil {
-			return err
-		}
-		idxID, err := res.LastInsertId()
-		if err != nil {
-			return err
-		}
-		seg.idxID = idxID
-		s.segments[key] = seg
-		return nil
-	}
-	_, err := s.db.Exec(`UPDATE raw_log_idx SET size=? WHERE id=?`, seg.offset, seg.idxID)
+	_, err := s.db.Exec(
+		`INSERT INTO raw_log_idx (trace_id, trace_name, ts, file, offset, size, is_req) VALUES (?,?,?,?,?,?,?)`,
+		traceID, name, time.Now().UTC(), s.activeName, offset, len(p), boolInt(isReq))
 	return err
 }
 
