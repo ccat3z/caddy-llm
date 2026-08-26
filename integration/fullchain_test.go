@@ -107,7 +107,7 @@ func TestFullChain(t *testing.T) {
 		return string(b)
 	}
 	claudeEntry := get(traceID + "/claude")
-	if cb := b64(claudeEntry["request_raw"]); !strings.HasPrefix(cb, "POST /v1/messages HTTP/1.1\r\n") || !strings.Contains(cb, `"max_tokens":10`) {
+	if cb := b64(claudeEntry["request_raw"]); !strings.HasPrefix(cb, "POST /v1/messages HTTP/1.1\r\n") || !strings.Contains(cb, `"max_tokens":10`) || !strings.Contains(cb, "\r\nHost: ") {
 		t.Errorf("claude stage request_raw = %s", cb)
 	}
 	openaiEntry := get(traceID + "/openai")

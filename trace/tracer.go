@@ -93,6 +93,12 @@ func (t *Tracer) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 	if s != nil {
 		var head bytes.Buffer
 		fmt.Fprintf(&head, "%s %s HTTP/1.1\r\n", r.Method, r.URL.RequestURI())
+		// Host lives in r.Host, not r.Header (Go's server moves it); emit it
+		// so the stored message is a valid, replayable HTTP/1.1 request
+		// (Host is mandatory per RFC 9112 §3.2).
+		if r.Host != "" {
+			fmt.Fprintf(&head, "Host: %s\r\n", r.Host)
+		}
 		for k, vs := range r.Header {
 			for _, v := range vs {
 				fmt.Fprintf(&head, "%s: %s\r\n", k, v)
