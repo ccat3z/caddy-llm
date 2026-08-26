@@ -153,3 +153,57 @@ func TestCloneIsolation(t *testing.T) {
 		t.Error("clone of frozen body must be mutable")
 	}
 }
+
+// TestMarshalFreezesWithoutDisturbingRead locks the Marshal contract: it
+// freezes the bytes (later Obj mutations ineffective) but leaves the read
+// cursor alone — a partially-read body continues from where it was.
+func TestMarshalFreezesWithoutDisturbingRead(t *testing.T) {
+	b := New(map[string]any{"k": "vvvv"})
+
+	// Partial read first: 4 of the 11 wire bytes.
+	buf := make([]byte, 4)
+	n, err := b.Read(buf)
+	if err != nil || string(buf[:n]) != `{"k"` {
+		t.Fatalf("partial read = %q %v", buf[:n], err)
+	}
+
+	// Marshal now: returns the FULL bytes, freezes them.
+	raw, err := b.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != `{"k":"vvvv"}` {
+		t.Errorf("Marshal = %s", raw)
+	}
+	if !b.Readonly() {
+		t.Error("Marshal must freeze")
+	}
+
+	// Obj mutations are now ineffective (frozen)...
+	b.Obj["k"] = "ignored"
+	// ...and Read CONTINUES from the cursor, not from the start.
+	rest, err := io.ReadAll(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := `{"k"` + string(rest); got != `{"k":"vvvv"}` {
+		t.Errorf("read after Marshal = %s, want continuation of frozen bytes", got)
+	}
+}
+
+// TestMarshalBeforeAnyRead: Marshal on a fresh body, then Read serves the
+// same frozen bytes from the beginning.
+func TestMarshalBeforeAnyRead(t *testing.T) {
+	b := New(map[string]any{"a": float64(1)})
+	raw, err := b.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != `{"a":1}` {
+		t.Errorf("Marshal = %s", raw)
+	}
+	out, err := io.ReadAll(b)
+	if err != nil || string(out) != `{"a":1}` {
+		t.Errorf("Read after Marshal = %s %v", out, err)
+	}
+}

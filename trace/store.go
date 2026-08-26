@@ -137,16 +137,18 @@ const rotateSize = 100 << 20 // 100MB
 type rawStore struct {
 	dir string
 
-	mu sync.Mutex
+	// mu guards the write path and the active-file bookkeeping; readers
+	// (List/Get) take it shared so a trace query never blocks in-flight
+	// streams (and vice versa on the metadata queries).
+	mu sync.RWMutex
 	db *sql.DB
 
-	// active is the file currently appended to.
+	// active is the file currently appended to — the only held-open read
+	// handle. Historical files are opened transiently on Get.
 	active     *os.File
 	activeName string
 	// activeSize is its current byte size (tracked, not stat'ed).
 	activeSize int64
-	// readers caches read handles per history file.
-	readers map[string]*os.File
 }
 
 // rawPiece locates one physical segment of a message.
@@ -157,10 +159,7 @@ type rawPiece struct {
 }
 
 func newRawStore(dir string) *rawStore {
-	return &rawStore{
-		dir:     dir,
-		readers: map[string]*os.File{},
-	}
+	return &rawStore{dir: dir}
 }
 
 func (s *rawStore) open() error {
@@ -224,10 +223,6 @@ func (s *rawStore) close() error {
 		firstErr = s.active.Close()
 		s.active = nil
 	}
-	for _, f := range s.readers {
-		f.Close()
-	}
-	s.readers = nil
 	if err := s.db.Close(); err != nil && firstErr == nil {
 		firstErr = err
 	}
@@ -298,8 +293,8 @@ func (s *rawStore) RecordRequest(_ context.Context, traceID, name string, ts tim
 
 // List implements storage.
 func (s *rawStore) List(_ context.Context, q Query) ([]RequestSummary, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	query := `SELECT trace_id, trace_name, ts, dur_ms, status, req_bytes, resp_bytes FROM llm_requests`
 	args := []any{}
@@ -330,8 +325,8 @@ func (s *rawStore) List(_ context.Context, q Query) ([]RequestSummary, error) {
 
 // Get implements storage.
 func (s *rawStore) Get(_ context.Context, traceID, name string) (*RequestDetail, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	det := &RequestDetail{}
 	// Aggregate row (may be missing for incomplete streams).
@@ -381,40 +376,44 @@ func (s *rawStore) Get(_ context.Context, traceID, name string) (*RequestDetail,
 	return det, nil
 }
 
-// readParts concatenates the raw bytes of the given segments. Callers hold s.mu.
+// readParts concatenates the raw bytes of the given segments. Every history
+// file is opened transiently — the only held-open handle is the active
+// write file, and it is O_WRONLY — so reads never accumulate fds. Callers
+// hold s.mu (shared).
 func (s *rawStore) readParts(parts []rawPiece) ([]byte, error) {
 	if len(parts) == 0 {
 		return nil, nil
 	}
 	var out []byte
+	var cur *os.File
+	curName := ""
+	defer func() {
+		if cur != nil {
+			cur.Close()
+		}
+	}()
 	for _, p := range parts {
-		f, err := s.reader(p.file)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue // externally deleted history file: skip its bytes
+		if cur == nil || p.file != curName {
+			if cur != nil {
+				cur.Close()
 			}
-			return nil, err
+			f, err := os.Open(filepath.Join(s.dir, p.file))
+			if err != nil {
+				if os.IsNotExist(err) {
+					cur, curName = nil, "" // externally deleted history file: skip its bytes
+					continue
+				}
+				return nil, err
+			}
+			cur, curName = f, p.file
 		}
 		buf := make([]byte, p.size)
-		if _, err := f.ReadAt(buf, p.offset); err != nil {
+		if _, err := cur.ReadAt(buf, p.offset); err != nil {
 			return nil, err
 		}
 		out = append(out, buf...)
 	}
 	return out, nil
-}
-
-// reader returns a cached read handle for a history file. Callers hold s.mu.
-func (s *rawStore) reader(name string) (*os.File, error) {
-	if f, ok := s.readers[name]; ok {
-		return f, nil
-	}
-	f, err := os.Open(filepath.Join(s.dir, name))
-	if err != nil {
-		return nil, err
-	}
-	s.readers[name] = f
-	return f, nil
 }
 
 var _ storage = (*rawStore)(nil)

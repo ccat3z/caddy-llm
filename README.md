@@ -206,30 +206,33 @@ all.go                    side-effect import of every module
 
 ## Performance notes
 
-Known hot-path costs, in rough priority order (all correctness-safe, all
-candidates for optimization):
+Known hot-path costs and their status (correctness-safe, all optional):
 
-- **Per-SSE-chunk SQLite work**: every traced response chunk appends to the
-  raw file *and* runs a SQLite `UPDATE` of the segment size, inside one
-  process-wide mutex. A 2,000-chunk stream pays ~2,000 statement
-  compiles+commits, and concurrent streams serialize. Deferring the size
-  update to the request's completion (or batching) is the obvious fix.
-- **Tracing adds latency to every client write**: the chunk write above
-  happens synchronously in front of the client's `Write` (also the
-  first-byte latency of a stream). A buffered writer goroutine would move
-  it off the hot path at the cost of a small crash window.
-- **Trace reads block writers**: `Get` holds the store's mutex across full
-  disk reads; one large trace query freezes in-flight streams. An RWMutex
-  (or dropping the lock before reading) fixes it.
-- **Segment map never evicted**: one entry per traced exchange direction,
-  freed only on file rotation.
-- **Deep clone per routing attempt**: every matched `llm_route` block
-  deep-copies the whole parsed body (a 96KB Claude Code request is ~4–6k
-  map/slice nodes), even when nothing downstream mutates it.
-- **Tool schemas re-parsed per request**: `normalizeSchema` parses and
-  re-marshals every tool's input schema on every request, even though
-  Claude Code sends byte-identical schemas each time; memoizing by raw
-  bytes removes it.
+- **Tracing adds latency to every client write**: every traced chunk is
+  written to disk synchronously in front of the client's `Write` (also the
+  first-byte latency of a stream). At this deployment's traffic volume the
+  cost is not measurable, so it stays synchronous by choice — the
+  per-chunk `UPDATE` it used to imply is gone (writes are append-only
+  INSERTs since the interleaving fix), and a buffered writer goroutine is
+  the fallback if volume grows.
+- **Trace reads don't block writers** *(fixed)*: `Get`/`List` take the
+  store lock shared; only the write path takes it exclusively, so trace
+  queries never freeze in-flight streams.
+- **Only one held-open file handle** *(fixed)*: reads open history files
+  transiently (`Get` opens, reads, closes); nothing accumulates over
+  rotations.
+- **Body bytes marshaled once** *(fixed)*: `llmroute.Body.Marshal`
+  freezes the wire bytes without disturbing the read cursor, so the
+  tracer snapshots the request without re-marshaling and without
+  consuming the body.
+- **Deep clone per routing attempt** *(deferred)*: every matched
+  `llm_route` block deep-copies the whole parsed body (a 96KB Claude Code
+  request is ~4–6k map/slice nodes), even when nothing downstream mutates
+  it.
+- **Tool schemas re-parsed per request** *(deferred)*:
+  `normalizeSchema` parses and re-marshals every tool's input schema on
+  every request, even though Claude Code sends byte-identical schemas each
+  time; memoizing by raw bytes removes it.
 
 ## Status / limitations
 

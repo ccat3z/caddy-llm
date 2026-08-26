@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -113,9 +112,11 @@ func (t *Tracer) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 	var body []byte
 	if r.Body != nil {
 		if jb, ok := r.Body.(*llmroute.Body); ok {
-			// Snapshot the parsed object without touching r.Body, so
-			// downstream handlers keep the type to assert against.
-			raw, err := marshalBody(jb)
+			// Marshal freezes the wire bytes from the parsed object without
+			// disturbing r.Body's read state, so downstream handlers keep
+			// both the type to assert against and a readable body — and the
+			// bytes are marshaled exactly once.
+			raw, err := jb.Marshal()
 			if err != nil {
 				return err
 			}
@@ -157,12 +158,6 @@ func (t *Tracer) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 		}
 	}
 	return err
-}
-
-// marshalBody produces the wire bytes of an llmroute.Body without disturbing
-// its state.
-func marshalBody(jb *llmroute.Body) ([]byte, error) {
-	return json.Marshal(jb.Obj)
 }
 
 // teeResponseWriter passes response bytes through to the client while

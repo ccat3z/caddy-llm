@@ -25,7 +25,7 @@ func TestConcurrentStreamsInterleave(t *testing.T) {
 		{"B", "B-head\r\n\r\n"},
 		{"A", "A1-"}, {"B", "B1-"},
 		{"A", "A2-"}, {"B", "B2-"},
-		{"A", "A3"},  {"B", "B3"},
+		{"A", "A3"}, {"B", "B3"},
 	}
 	for _, st := range seq {
 		if err := s.Save(ctx, st.id, "glm", false, []byte(st.chk)); err != nil {
@@ -49,5 +49,53 @@ func TestConcurrentStreamsInterleave(t *testing.T) {
 			t.Errorf("%s's response corrupted:\n got: %q\nwant: %q", id, resp, want)
 		}
 		_ = strings.TrimSpace
+	}
+}
+
+// TestGetDuringConcurrentSaves: readers (Get) run concurrently with writers
+// (Save) — the RWMutex must let both proceed, and each Get must see only
+// its own exchange's bytes.
+// chunkUnit is one streaming write in the concurrency tests (19 bytes).
+const chunkUnit = "w-chunk-0123456789;"
+
+func TestGetDuringConcurrentSaves(t *testing.T) {
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+
+	// Seed the first row so concurrent Gets never see an empty exchange.
+	if err := s.Save(ctx, "W", "glm", false, []byte("w-chunk-0123456789;")); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 199; i++ {
+			_ = s.Save(ctx, "W", "glm", false, []byte("w-chunk-0123456789;"))
+		}
+	}()
+	for i := 0; i < 50; i++ {
+		got, err := s.Get(ctx, "W", "glm")
+		if err != nil {
+			t.Fatalf("concurrent Get: %v", err)
+		}
+		// Every read must be a whole number of chunk units — partial or
+		// contaminated reads break the repetition pattern.
+		if n := len(got.Response); n%len(chunkUnit) != 0 {
+			t.Fatalf("partial chunk read: %d bytes", n)
+		}
+		if !strings.HasPrefix(string(got.Response), "w-chunk-") {
+			t.Fatalf("response start = %q", got.Response[:16])
+		}
+	}
+	<-done
+
+	// Final read must contain exactly the 200 chunks in order.
+	got, err := s.Get(ctx, "W", "glm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Repeat(chunkUnit, 200)
+	if string(got.Response) != want {
+		t.Errorf("final read = %d bytes, want %d", len(got.Response), len(want))
 	}
 }

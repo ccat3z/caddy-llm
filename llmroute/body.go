@@ -47,6 +47,19 @@ func New(obj map[string]any) *Body { return &Body{Obj: obj} }
 // effect. Check this before modifying Obj.
 func (b *Body) Readonly() bool { return b.data != nil }
 
+// Marshal returns the body's wire bytes, freezing them from Obj if not
+// already frozen. Freezing does NOT disturb the read state: a body that
+// has been partially (or fully) Read keeps its cursor, and Read continues
+// serving from the frozen bytes. Use this to snapshot the bytes (e.g. for
+// tracing) exactly once instead of re-marshaling per consumer; note that
+// like Read it makes later Obj mutations ineffective.
+func (b *Body) Marshal() ([]byte, error) {
+	if err := b.marshal(); err != nil {
+		return nil, err
+	}
+	return b.data, nil
+}
+
 // marshal freezes the byte form from Obj.
 func (b *Body) marshal() error {
 	if b.data != nil {
