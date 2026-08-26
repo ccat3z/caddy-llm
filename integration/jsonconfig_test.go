@@ -36,14 +36,14 @@ func TestFullChainJSON(t *testing.T) {
 
 	traceDir := t.TempDir()
 	cfg := map[string]any{
-		"admin": map[string]any{"listen": "localhost:2999"},
+		"admin": map[string]any{"listen": fmt.Sprintf("localhost:%d", testPorts[1])},
 		"apps": map[string]any{
 			"llm_tracer": map[string]any{"dir": traceDir},
 			"http": map[string]any{
-				"http_port": 8080,
+				"http_port": testPorts[0],
 				"servers": map[string]any{
 					"srv0": map[string]any{
-						"listen": []string{":8080"},
+						"listen": []string{fmt.Sprintf("127.0.0.1:%d", testPorts[0])},
 						"routes": []any{
 							// JSON routes evaluate strictly in order (no
 							// Caddyfile-style matcher reordering), so specific
@@ -78,11 +78,11 @@ func TestFullChainJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tester := caddytest.NewTester(t)
+	tester := caddytest.NewTester(t).WithDefaultOverrides(caddytest.Config{AdminPort: testPorts[1]})
 	tester.InitServer(string(cfgJSON), "json")
 
 	// Claude-format request through the whole chain.
-	resp, err := http.Post("http://localhost:8080/v1/messages", "application/json",
+	resp, err := http.Post(httpBase()+"/v1/messages", "application/json",
 		strings.NewReader(`{"model":"client-model","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}`))
 	if err != nil {
 		t.Fatalf("post: %v", err)
@@ -129,7 +129,7 @@ func TestFullChainJSON(t *testing.T) {
 		}
 	}
 	fetchList := func() []map[string]any {
-		lresp, err := http.Get("http://localhost:8080/llm/traces")
+		lresp, err := http.Get(httpBase() + "/llm/traces")
 		if err != nil {
 			t.Fatalf("list: %v", err)
 		}
@@ -151,7 +151,7 @@ func TestFullChainJSON(t *testing.T) {
 
 	// Full entry via the API: request bodies stored, one per stage.
 	getEntry := func(stage string) map[string]any {
-		gresp, err := http.Get("http://localhost:8080/llm/traces/" + traceID + "/" + stage)
+		gresp, err := http.Get(httpBase() + "/llm/traces/" + traceID + "/" + stage)
 		if err != nil {
 			t.Fatalf("get %s: %v", stage, err)
 		}

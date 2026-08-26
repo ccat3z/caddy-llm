@@ -82,7 +82,7 @@ func routeJSON(mcURL, glmURL string) string {
 func postModel(t *testing.T, model string) (int, string) {
 	t.Helper()
 	body := fmt.Sprintf(`{"model":%q,"max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`, model)
-	resp, err := http.Post("http://localhost:8080/v1/messages", "application/json", strings.NewReader(body))
+	resp, err := http.Post(httpBase()+"/v1/messages", "application/json", strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("post: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestLLMRoutePriorityAndFallthrough(t *testing.T) {
 	defer mcSrv.Close()
 	defer glmSrv.Close()
 
-	tester := caddytest.NewTester(t)
+	tester := caddytest.NewTester(t).WithDefaultOverrides(caddytest.Config{AdminPort: testPorts[1]})
 	tester.InitServer(routeJSON(mcSrv.URL, glmSrv.URL), "json")
 
 	t.Run("short model hits first (priority) block", func(t *testing.T) {
@@ -208,7 +208,7 @@ func TestLLMRouteWithTranslation(t *testing.T) {
 	defer claudeSrv.Close()
 	defer openaiUp.Close()
 
-	tester := caddytest.NewTester(t)
+	tester := caddytest.NewTester(t).WithDefaultOverrides(caddytest.Config{AdminPort: testPorts[1]})
 	tester.InitServer(jsonConfig(messagesRoute(
 		llmRoute([]map[string]any{
 			modelRule(`native/(.*)`, "$1"),
@@ -257,7 +257,7 @@ func TestLLMRouteSSEStreaming(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	tester := caddytest.NewTester(t)
+	tester := caddytest.NewTester(t).WithDefaultOverrides(caddytest.Config{AdminPort: testPorts[1]})
 	tester.InitServer(jsonConfig(messagesRoute(
 		llmRoute([]map[string]any{
 			modelRule("sse-model", ""),
@@ -265,7 +265,7 @@ func TestLLMRouteSSEStreaming(t *testing.T) {
 		respondHandler(404, "no upstream"),
 	)), "json")
 
-	resp, err := http.Post("http://localhost:8080/v1/messages", "application/json",
+	resp, err := http.Post(httpBase()+"/v1/messages", "application/json",
 		strings.NewReader(`{"model":"sse-model","messages":[]}`))
 	if err != nil {
 		t.Fatal(err)
@@ -313,7 +313,7 @@ func TestBodyPipeline(t *testing.T) {
 	}))
 	defer openaiUp.Close()
 
-	tester := caddytest.NewTester(t)
+	tester := caddytest.NewTester(t).WithDefaultOverrides(caddytest.Config{AdminPort: testPorts[1]})
 	tester.InitServer(jsonConfig(messagesRoute(
 		llmRoute([]map[string]any{
 			modelRule(`glm/(.*)`, "$1"), modelRule("glm-5.2", ""),
@@ -339,7 +339,7 @@ func TestBodyPipeline(t *testing.T) {
 
 	// Streaming through the pipeline (translator inside the subchain wraps
 	// peekWriter, which wraps the real w).
-	resp, err := http.Post("http://localhost:8080/v1/messages", "application/json",
+	resp, err := http.Post(httpBase()+"/v1/messages", "application/json",
 		strings.NewReader(`{"model":"glm-5.2","max_tokens":16,"stream":true,"messages":[{"role":"user","content":"hi"}]}`))
 	if err != nil {
 		t.Fatal(err)
@@ -370,7 +370,7 @@ func TestOriginalBodyAlwaysReadable(t *testing.T) {
 	}))
 	defer up.Close()
 
-	tester := caddytest.NewTester(t)
+	tester := caddytest.NewTester(t).WithDefaultOverrides(caddytest.Config{AdminPort: testPorts[1]})
 	tester.InitServer(jsonConfig(messagesRoute(
 		llmRoute([]map[string]any{
 			modelRule("glm-5.2", ""),
@@ -379,7 +379,7 @@ func TestOriginalBodyAlwaysReadable(t *testing.T) {
 	)), "json")
 
 	orig := `{"model":"glm-5.2","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`
-	resp, err := http.Post("http://localhost:8080/v1/messages", "application/json", strings.NewReader(orig))
+	resp, err := http.Post(httpBase()+"/v1/messages", "application/json", strings.NewReader(orig))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -414,7 +414,7 @@ func TestBodyTypeAssertionVisibleDownstream(t *testing.T) {
 	}))
 	defer up.Close()
 
-	tester := caddytest.NewTester(t)
+	tester := caddytest.NewTester(t).WithDefaultOverrides(caddytest.Config{AdminPort: testPorts[1]})
 	tester.InitServer(jsonConfig(messagesRoute(
 		llmRoute([]map[string]any{
 			modelRule("glm-5.2", ""),
@@ -422,7 +422,7 @@ func TestBodyTypeAssertionVisibleDownstream(t *testing.T) {
 		respondHandler(404, "no upstream"),
 	)), "json")
 
-	resp, err := http.Post("http://localhost:8080/v1/messages", "application/json",
+	resp, err := http.Post(httpBase()+"/v1/messages", "application/json",
 		strings.NewReader(`{"model":"glm-5.2","messages":[]}`))
 	if err != nil {
 		t.Fatal(err)
@@ -442,7 +442,7 @@ func TestLegacyClaude2openaiHandlerForm(t *testing.T) {
 	}))
 	defer openaiUp.Close()
 
-	tester := caddytest.NewTester(t)
+	tester := caddytest.NewTester(t).WithDefaultOverrides(caddytest.Config{AdminPort: testPorts[1]})
 	tester.InitServer(jsonConfig(messagesRoute(
 		llmRoute([]map[string]any{
 			modelRule("glm-5.2", ""),

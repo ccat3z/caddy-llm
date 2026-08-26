@@ -30,11 +30,11 @@ func TestFullChain(t *testing.T) {
 	defer upstream.Close()
 
 	traceDir := t.TempDir()
-	tester := caddytest.NewTester(t)
+	tester := caddytest.NewTester(t).WithDefaultOverrides(caddytest.Config{AdminPort: testPorts[1]})
 	tester.InitServer(jsonConfigWithTracer(traceDir, upstream.URL), "json")
 
 	// Client request in Claude format.
-	resp, err := http.Post("http://localhost:8080/v1/messages", "application/json",
+	resp, err := http.Post(httpBase()+"/v1/messages", "application/json",
 		strings.NewReader(`{"model":"client-model","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}`))
 	if err != nil {
 		t.Fatalf("post: %v", err)
@@ -55,7 +55,7 @@ func TestFullChain(t *testing.T) {
 	var mine []map[string]any
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		lresp, err := http.Get("http://localhost:8080/llm/traces")
+		lresp, err := http.Get(httpBase() + "/llm/traces")
 		if err != nil {
 			t.Fatalf("list traces: %v", err)
 		}
@@ -88,7 +88,7 @@ func TestFullChain(t *testing.T) {
 	// Full entry bodies: claude stage saw Claude format, openai stage saw
 	// OpenAI format.
 	get := func(id string) map[string]any {
-		gresp, err := http.Get("http://localhost:8080/llm/traces/" + id)
+		gresp, err := http.Get(httpBase() + "/llm/traces/" + id)
 		if err != nil {
 			t.Fatalf("get %s: %v", id, err)
 		}

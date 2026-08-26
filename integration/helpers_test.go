@@ -2,20 +2,47 @@ package integration
 
 import (
 	"encoding/json"
+	"fmt"
+	"net"
 	"strings"
 )
 
-// jsonConfig builds a minimal Caddy JSON config: one HTTP server on :8080
-// with the given routes, admin on localhost:2999, no HTTPS.
+// testPorts holds the per-process random ports tests listen on, so parallel
+// package runs never collide. Allocated once per test binary.
+var testPorts = func() [2]int {
+	for range 50 {
+		l1, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			continue
+		}
+		p1 := l1.Addr().(*net.TCPAddr).Port
+		l2, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			l1.Close()
+			continue
+		}
+		p2 := l2.Addr().(*net.TCPAddr).Port
+		l1.Close()
+		l2.Close()
+		return [2]int{p1, p2}
+	}
+	panic("no free ports for tests")
+}()
+
+// httpBase is the URL tests post to.
+func httpBase() string { return fmt.Sprintf("http://127.0.0.1:%d", testPorts[0]) }
+
+// jsonConfig builds a minimal Caddy JSON config: one HTTP server on the
+// process's random port, admin likewise, no HTTPS.
 func jsonConfig(routes ...map[string]any) string {
 	cfg := map[string]any{
-		"admin": map[string]any{"listen": "localhost:2999"},
+		"admin": map[string]any{"listen": fmt.Sprintf("localhost:%d", testPorts[1])},
 		"apps": map[string]any{
 			"http": map[string]any{
-				"http_port": 8080,
+				"http_port": testPorts[0],
 				"servers": map[string]any{
 					"srv0": map[string]any{
-						"listen":          []string{":8080"},
+						"listen":          []string{fmt.Sprintf("127.0.0.1:%d", testPorts[0])},
 						"automatic_https": map[string]any{"disable": true},
 						"routes":          routes,
 					},
@@ -118,18 +145,23 @@ func dial(srvURL string) string {
 	return strings.TrimPrefix(srvURL, "http://")
 }
 
+// handleRoute wraps bare handlers in a catch-all route.
+func handleRoute(handlers ...map[string]any) map[string]any {
+	return map[string]any{"handle": handlers}
+}
+
 // jsonConfigWithTracer builds the full-chain config: llm_tracer app storing
 // under dir, the translation chain for POST /v1/messages, and the traces API.
 func jsonConfigWithTracer(dir, upstreamURL string) string {
 	cfg := map[string]any{
-		"admin": map[string]any{"listen": "localhost:2999"},
+		"admin": map[string]any{"listen": fmt.Sprintf("localhost:%d", testPorts[1])},
 		"apps": map[string]any{
 			"llm_tracer": map[string]any{"dir": dir},
 			"http": map[string]any{
-				"http_port": 8080,
+				"http_port": testPorts[0],
 				"servers": map[string]any{
 					"srv0": map[string]any{
-						"listen":          []string{":8080"},
+						"listen":          []string{fmt.Sprintf("127.0.0.1:%d", testPorts[0])},
 						"automatic_https": map[string]any{"disable": true},
 						"routes": []any{
 							// JSON routes match strictly in order: specific
@@ -165,9 +197,4 @@ func jsonConfigWithTracer(dir, upstreamURL string) string {
 		panic(err)
 	}
 	return string(b)
-}
-
-// handleRoute wraps bare handlers in a catch-all route.
-func handleRoute(handlers ...map[string]any) map[string]any {
-	return map[string]any{"handle": handlers}
 }

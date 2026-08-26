@@ -2,7 +2,9 @@ package claudetoopenai
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,13 +18,13 @@ import (
 // unmanaged; everything else 404s.
 func proxyConfig(upstreamDial string) string {
 	cfg := map[string]any{
-		"admin": map[string]any{"listen": "localhost:2999"},
+		"admin": map[string]any{"listen": fmt.Sprintf("localhost:%d", testPorts[1])},
 		"apps": map[string]any{
 			"http": map[string]any{
-				"http_port": 8080,
+				"http_port": testPorts[0],
 				"servers": map[string]any{
 					"srv0": map[string]any{
-						"listen":          []string{":8080"},
+						"listen":          []string{fmt.Sprintf("127.0.0.1:%d", testPorts[0])},
 						"automatic_https": map[string]any{"disable": true},
 						"routes": []any{
 							map[string]any{
@@ -63,11 +65,36 @@ func proxyConfig(upstreamDial string) string {
 	return string(b)
 }
 
+// testPorts holds the per-process random ports tests listen on, so parallel
+// package runs never collide. Allocated once per test binary.
+var testPorts = func() [2]int {
+	for range 50 {
+		l1, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			continue
+		}
+		p1 := l1.Addr().(*net.TCPAddr).Port
+		l2, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			l1.Close()
+			continue
+		}
+		p2 := l2.Addr().(*net.TCPAddr).Port
+		l1.Close()
+		l2.Close()
+		return [2]int{p1, p2}
+	}
+	panic("no free ports for tests")
+}()
+
+// httpBase is the URL tests post to.
+func httpBase() string { return fmt.Sprintf("http://127.0.0.1:%d", testPorts[0]) }
+
 // startProxy launches a caddytest server proxying /v1/messages through
 // claude2openai to the given upstream.
 func startProxy(t *testing.T, upstreamURL string) *caddytest.Tester {
 	t.Helper()
-	tester := caddytest.NewTester(t)
+	tester := caddytest.NewTester(t).WithDefaultOverrides(caddytest.Config{AdminPort: testPorts[1]})
 	tester.InitServer(proxyConfig(strings.TrimPrefix(upstreamURL, "http://")), "json")
 	return tester
 }
@@ -75,7 +102,7 @@ func startProxy(t *testing.T, upstreamURL string) *caddytest.Tester {
 // post posts a body to the tester's server and returns status + body.
 func post(t *testing.T, tester *caddytest.Tester, path, body string) (int, string) {
 	t.Helper()
-	resp, err := http.Post("http://localhost:8080"+path, "application/json", strings.NewReader(body))
+	resp, err := http.Post(httpBase()+path, "application/json", strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("post %s: %v", path, err)
 	}
@@ -232,8 +259,33 @@ func TestUnmatchedPathNotProxied(t *testing.T) {
 // TestInvalidClaudeBody: malformed request body gets a 400 Claude error
 // without reaching the next handler.
 func TestInvalidClaudeBody(t *testing.T) {
-	tester := caddytest.NewTester(t)
-	tester.InitServer(`{"admin":{"listen":"localhost:2999"},"apps":{"http":{"http_port":8080,"servers":{"srv0":{"listen":[":8080"],"automatic_https":{"disable":true},"routes":[{"handle":[{"handler":"claude2openai"},{"handler":"static_response","status_code":200,"body":"unreachable"}]}]}}}}}`, "json")
+	tester := caddytest.NewTester(t).WithDefaultOverrides(caddytest.Config{AdminPort: testPorts[1]})
+	cfg, err := json.Marshal(map[string]any{
+		"admin": map[string]any{"listen": fmt.Sprintf("localhost:%d", testPorts[1])},
+		"apps": map[string]any{
+			"http": map[string]any{
+				"http_port": testPorts[0],
+				"servers": map[string]any{
+					"srv0": map[string]any{
+						"listen":          []string{fmt.Sprintf("127.0.0.1:%d", testPorts[0])},
+						"automatic_https": map[string]any{"disable": true},
+						"routes": []any{
+							map[string]any{
+								"handle": []any{
+									map[string]any{"handler": "claude2openai"},
+									map[string]any{"handler": "static_response", "status_code": 200, "body": "unreachable"},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tester.InitServer(string(cfg), "json")
 
 	status, body := post(t, tester, "/v1/messages", `{not json`)
 	if status != 400 {

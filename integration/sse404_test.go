@@ -35,7 +35,7 @@ func TestSSE404FallsThrough(t *testing.T) {
 	defer primary.Close()
 	defer fallback.Close()
 
-	tester := caddytest.NewTester(t)
+	tester := caddytest.NewTester(t).WithDefaultOverrides(caddytest.Config{AdminPort: testPorts[1]})
 	tester.InitServer(jsonConfig(messagesRoute(
 		llmRoute([]map[string]any{
 			modelRule("glm-5.2", ""),
@@ -46,7 +46,7 @@ func TestSSE404FallsThrough(t *testing.T) {
 		respondHandler(404, "no upstream"),
 	)), "json")
 
-	resp, err := http.Post("http://localhost:8080/v1/messages", "application/json",
+	resp, err := http.Post(httpBase()+"/v1/messages", "application/json",
 		strings.NewReader(`{"model":"glm-5.2","max_tokens":8,"stream":true,"messages":[{"role":"user","content":"hi"}]}`))
 	if err != nil {
 		t.Fatal(err)

@@ -135,9 +135,8 @@ Or use [xcaddy](https://github.com/caddyserver/xcaddy):
 go test ./...
 ```
 
-Run packages sequentially (`for p in translate llmroute claudetoopenai trace
-integration integration/cpa; do go test ./$p/; done`) — the integration tests
-bind fixed ports and conflict when run in parallel.
+The caddytest-based packages (claudetoopenai, integration) bind a random
+port pair per test binary, so parallel package runs don't conflict.
 
 Two layers of translation tests, both driven by CLIProxyAPI request logs
 (original Claude request → forwarded OpenAI request, upstream response →

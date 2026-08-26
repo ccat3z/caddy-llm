@@ -36,7 +36,7 @@ func TestGzipUpstreamResponse(t *testing.T) {
 		w.Write([]byte(`{"id":"x","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
 	}))
 	defer up.Close()
-	tester := caddytest.NewTester(t)
+	tester := caddytest.NewTester(t).WithDefaultOverrides(caddytest.Config{AdminPort: testPorts[1]})
 	tester.InitServer(jsonConfig(messagesRoute(
 		llmRoute([]map[string]any{
 			modelRule("glm-5.2", ""),
@@ -44,7 +44,7 @@ func TestGzipUpstreamResponse(t *testing.T) {
 		respondHandler(404, "no-upstream"),
 	)), "json")
 	for _, enc := range []string{"identity", "gzip", "gzip"} {
-		req, _ := http.NewRequest("POST", "http://localhost:8080/v1/messages",
+		req, _ := http.NewRequest("POST", httpBase()+"/v1/messages",
 			strings.NewReader(`{"model":"glm-5.2","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept-Encoding", enc)
