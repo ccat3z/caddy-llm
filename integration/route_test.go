@@ -61,43 +61,22 @@ func (u *upstreamLog) setStatus(s int) {
 	u.status = s
 }
 
-// routeCaddyfile builds an llm_route chain over two mock upstreams.
+// routeJSON builds an llm_route chain over two mock upstreams.
 // Upstream "mc" (higher priority, first block) is a pass-through Claude-ish
 // API; upstream "glm" runs claude2openai. Both are actually the same mocks —
 // what matters is routing/fallthrough, not the body translation here.
-func routeCaddyfile(mcURL, glmURL string, mcStatus int) string {
-	return fmt.Sprintf(`
-	{
-		skip_install_trust
-		admin localhost:2999
-		http_port 8080
-	}
-	localhost:8080 {
-		@claude path /v1/messages
-		route @claude {
-			llm_route {
-				model mc/(.*) $1
-				model glm-5.2
-				route {
-					rewrite * /mc/chat
-					reverse_proxy %s {
-						header_up Authorization "Bearer mc-key"
-					}
-				}
-			}
-			llm_route {
-				model glm/(.*) $1
-				model glm-5.2
-				route {
-					rewrite * /glm/chat
-					reverse_proxy %s {
-						header_up Authorization "Bearer glm-key"
-					}
-				}
-			}
-			respond "no upstream" 404
-		}
-	}`, mcURL, glmURL)
+func routeJSON(mcURL, glmURL string) string {
+	return jsonConfig(messagesRoute(
+		llmRoute([]map[string]any{
+			modelRule(`mc/(.*)`, "$1"),
+			modelRule("glm-5.2", ""),
+		}, rewriteHandler("/mc/chat"), proxyHandler(dial(mcURL), "Bearer mc-key")),
+		llmRoute([]map[string]any{
+			modelRule(`glm/(.*)`, "$1"),
+			modelRule("glm-5.2", ""),
+		}, rewriteHandler("/glm/chat"), proxyHandler(dial(glmURL), "Bearer glm-key")),
+		respondHandler(404, "no upstream"),
+	))
 }
 
 func postModel(t *testing.T, model string) (int, string) {
@@ -121,7 +100,7 @@ func TestLLMRoutePriorityAndFallthrough(t *testing.T) {
 	defer glmSrv.Close()
 
 	tester := caddytest.NewTester(t)
-	tester.InitServer(routeCaddyfile(mcSrv.URL, glmSrv.URL, http.StatusOK), "caddyfile")
+	tester.InitServer(routeJSON(mcSrv.URL, glmSrv.URL), "json")
 
 	t.Run("short model hits first (priority) block", func(t *testing.T) {
 		status, _ := postModel(t, "glm-5.2")
@@ -230,33 +209,15 @@ func TestLLMRouteWithTranslation(t *testing.T) {
 	defer openaiUp.Close()
 
 	tester := caddytest.NewTester(t)
-	tester.InitServer(fmt.Sprintf(`
-	{
-		skip_install_trust
-		admin localhost:2999
-		http_port 8080
-	}
-	localhost:8080 {
-		@claude path /v1/messages
-		route @claude {
-			llm_route {
-				model native/(.*) $1
-				route {
-					rewrite * /v2/chat
-					reverse_proxy %s
-				}
-			}
-			llm_route {
-				model openai/(.*) $1
-				route {
-					rewrite * /v1/chat/completions
-					claude2openai
-					reverse_proxy %s
-				}
-			}
-			respond "no upstream" 404
-		}
-	}`, claudeSrv.URL, openaiUp.URL), "caddyfile")
+	tester.InitServer(jsonConfig(messagesRoute(
+		llmRoute([]map[string]any{
+			modelRule(`native/(.*)`, "$1"),
+		}, rewriteHandler("/v2/chat"), proxyHandler(dial(claudeSrv.URL), "")),
+		llmRoute([]map[string]any{
+			modelRule(`openai/(.*)`, "$1"),
+		}, rewriteHandler("/v1/chat/completions"), claude2openaiHandler(), proxyHandler(dial(openaiUp.URL), "")),
+		respondHandler(404, "no upstream"),
+	)), "json")
 
 	// openai-prefixed model goes through claude2openai and comes back
 	// translated as a Claude message.
@@ -297,25 +258,12 @@ func TestLLMRouteSSEStreaming(t *testing.T) {
 	defer upstream.Close()
 
 	tester := caddytest.NewTester(t)
-	tester.InitServer(fmt.Sprintf(`
-	{
-		skip_install_trust
-		admin localhost:2999
-		http_port 8080
-	}
-	localhost:8080 {
-		@claude path /v1/messages
-		route @claude {
-			llm_route {
-				model sse-model
-				route {
-					rewrite * /stream
-					reverse_proxy %s
-				}
-			}
-			respond "no upstream" 404
-		}
-	}`, upstream.URL), "caddyfile")
+	tester.InitServer(jsonConfig(messagesRoute(
+		llmRoute([]map[string]any{
+			modelRule("sse-model", ""),
+		}, rewriteHandler("/stream"), proxyHandler(dial(upstream.URL), "")),
+		respondHandler(404, "no upstream"),
+	)), "json")
 
 	resp, err := http.Post("http://localhost:8080/v1/messages", "application/json",
 		strings.NewReader(`{"model":"sse-model","messages":[]}`))
@@ -366,27 +314,12 @@ func TestBodyPipeline(t *testing.T) {
 	defer openaiUp.Close()
 
 	tester := caddytest.NewTester(t)
-	tester.InitServer(fmt.Sprintf(`
-	{
-		skip_install_trust
-		admin localhost:2999
-		http_port 8080
-	}
-	localhost:8080 {
-		@claude path /v1/messages
-		route @claude {
-			llm_route {
-				model glm/(.*) $1
-				model glm-5.2
-				route {
-					rewrite * /v1/chat/completions
-					claude2openai
-					reverse_proxy %s
-				}
-			}
-			respond "no upstream" 404
-		}
-	}`, openaiUp.URL), "caddyfile")
+	tester.InitServer(jsonConfig(messagesRoute(
+		llmRoute([]map[string]any{
+			modelRule(`glm/(.*)`, "$1"), modelRule("glm-5.2", ""),
+		}, rewriteHandler("/v1/chat/completions"), claude2openaiHandler(), proxyHandler(dial(openaiUp.URL), "")),
+		respondHandler(404, "no upstream"),
+	)), "json")
 
 	// Non-streaming through the pipeline.
 	status, body := postModel(t, "glm/glm-5.2")
@@ -438,26 +371,12 @@ func TestOriginalBodyAlwaysReadable(t *testing.T) {
 	defer up.Close()
 
 	tester := caddytest.NewTester(t)
-	tester.InitServer(fmt.Sprintf(`
-	{
-		skip_install_trust
-		admin localhost:2999
-		http_port 8080
-	}
-	localhost:8080 {
-		@claude path /v1/messages
-		route @claude {
-			llm_route {
-				model glm-5.2
-				route {
-					# a "user middleware" that reads the body before proxying
-					vars dummy after-llm-route
-					reverse_proxy %s
-				}
-			}
-			respond "no upstream" 404
-		}
-	}`, up.URL), "caddyfile")
+	tester.InitServer(jsonConfig(messagesRoute(
+		llmRoute([]map[string]any{
+			modelRule("glm-5.2", ""),
+		}, proxyHandler(dial(up.URL), "")),
+		respondHandler(404, "no upstream"),
+	)), "json")
 
 	orig := `{"model":"glm-5.2","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`
 	resp, err := http.Post("http://localhost:8080/v1/messages", "application/json", strings.NewReader(orig))
@@ -496,26 +415,12 @@ func TestBodyTypeAssertionVisibleDownstream(t *testing.T) {
 	defer up.Close()
 
 	tester := caddytest.NewTester(t)
-	tester.InitServer(fmt.Sprintf(`
-	{
-		skip_install_trust
-		admin localhost:2999
-		http_port 8080
-	}
-	localhost:8080 {
-		@claude path /v1/messages
-		route @claude {
-			# a chain handler that reads the body like llm_route does but sits
-			# BEFORE it: raw bytes in, must still work.
-			llm_route {
-				model glm-5.2
-				route {
-					reverse_proxy %s
-				}
-			}
-			respond "no upstream" 404
-		}
-	}`, up.URL), "caddyfile")
+	tester.InitServer(jsonConfig(messagesRoute(
+		llmRoute([]map[string]any{
+			modelRule("glm-5.2", ""),
+		}, proxyHandler(dial(up.URL), "")),
+		respondHandler(404, "no upstream"),
+	)), "json")
 
 	resp, err := http.Post("http://localhost:8080/v1/messages", "application/json",
 		strings.NewReader(`{"model":"glm-5.2","messages":[]}`))
@@ -538,26 +443,12 @@ func TestLegacyClaude2openaiHandlerForm(t *testing.T) {
 	defer openaiUp.Close()
 
 	tester := caddytest.NewTester(t)
-	tester.InitServer(fmt.Sprintf(`
-	{
-		skip_install_trust
-		admin localhost:2999
-		http_port 8080
-	}
-	localhost:8080 {
-		@claude path /v1/messages
-		route @claude {
-			llm_route {
-				model glm-5.2
-				route {
-					rewrite * /v1/chat/completions
-					claude2openai
-					reverse_proxy %s
-				}
-			}
-			respond "no upstream" 404
-		}
-	}`, openaiUp.URL), "caddyfile")
+	tester.InitServer(jsonConfig(messagesRoute(
+		llmRoute([]map[string]any{
+			modelRule("glm-5.2", ""),
+		}, rewriteHandler("/v1/chat/completions"), claude2openaiHandler(), proxyHandler(dial(openaiUp.URL), "")),
+		respondHandler(404, "no upstream"),
+	)), "json")
 
 	status, body := postModel(t, "glm-5.2")
 	if status != 200 {

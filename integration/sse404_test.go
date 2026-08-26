@@ -1,7 +1,6 @@
 package integration
 
 import (
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -37,32 +36,15 @@ func TestSSE404FallsThrough(t *testing.T) {
 	defer fallback.Close()
 
 	tester := caddytest.NewTester(t)
-	tester.InitServer(fmt.Sprintf(`
-	{
-		skip_install_trust
-		admin localhost:2999
-		http_port 8080
-	}
-	localhost:8080 {
-		@claude path /v1/messages
-		route @claude {
-			llm_route {
-				model glm-5.2
-				route {
-					claude2openai
-					reverse_proxy %s
-				}
-			}
-			llm_route {
-				model glm-5.2
-				route {
-					claude2openai
-					reverse_proxy %s
-				}
-			}
-			respond "no upstream" 404
-		}
-	}`, primary.URL, fallback.URL), "caddyfile")
+	tester.InitServer(jsonConfig(messagesRoute(
+		llmRoute([]map[string]any{
+			modelRule("glm-5.2", ""),
+		}, claude2openaiHandler(), proxyHandler(dial(primary.URL), "")),
+		llmRoute([]map[string]any{
+			modelRule("glm-5.2", ""),
+		}, claude2openaiHandler(), proxyHandler(dial(fallback.URL), "")),
+		respondHandler(404, "no upstream"),
+	)), "json")
 
 	resp, err := http.Post("http://localhost:8080/v1/messages", "application/json",
 		strings.NewReader(`{"model":"glm-5.2","max_tokens":8,"stream":true,"messages":[{"role":"user","content":"hi"}]}`))

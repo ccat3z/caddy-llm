@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 )
 
 // Body is an in-memory JSON request body: the parsed object is authoritative.
@@ -106,11 +107,23 @@ func FromBody(r *http.Request) (*Body, error) {
 	}
 	b, err := FromBytes(raw)
 	if err != nil {
-		resetBody(r, raw) // keep the request readable on the error path
+		SetRawRequestBody(r, raw) // keep the request readable on the error path
 		return nil, err
 	}
 	SetRequestBody(r, b)
 	return b, nil
+}
+
+// SetRawRequestBody installs raw as the request's body with length/GetBody
+// rewired — the plain-bytes counterpart of SetRequestBody, used to restore
+// bodies that failed to parse as JSON objects.
+func SetRawRequestBody(r *http.Request, raw []byte) {
+	r.Body = io.NopCloser(bytes.NewReader(raw))
+	r.ContentLength = int64(len(raw))
+	r.Header.Set("Content-Length", strconv.Itoa(len(raw)))
+	r.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(raw)), nil
+	}
 }
 
 // SetRequestBody installs b as the request's body. The length is only known
@@ -131,24 +144,27 @@ func SetRequestBody(r *http.Request, b *Body) {
 	}
 }
 
-// deepCopyObj recursively copies a parsed JSON object (maps, slices, and the
-// scalar values json.Unmarshal produces) so clones never share state.
-func deepCopyObj(obj map[string]any) map[string]any {
-	out := make(map[string]any, len(obj))
-	for k, v := range obj {
-		out[k] = deepCopyValue(v)
-	}
-	return out
+// Clone returns an independent copy of the body's parsed object: mutations
+// of the clone (or its Obj) never affect the original. The clone is always
+// mutable (not frozen), even if the original has already been read.
+func (b *Body) Clone() *Body {
+	return New(cloneValue(b.Obj).(map[string]any))
 }
 
-func deepCopyValue(v any) any {
+// cloneValue recursively copies a parsed JSON value (maps, slices, and the
+// scalar types json.Unmarshal produces).
+func cloneValue(v any) any {
 	switch t := v.(type) {
 	case map[string]any:
-		return deepCopyObj(t)
+		out := make(map[string]any, len(t))
+		for k, e := range t {
+			out[k] = cloneValue(e)
+		}
+		return out
 	case []any:
 		out := make([]any, len(t))
 		for i, e := range t {
-			out[i] = deepCopyValue(e)
+			out[i] = cloneValue(e)
 		}
 		return out
 	default:

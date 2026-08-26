@@ -9,37 +9,20 @@
 package llmroute
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"regexp"
-	"strconv"
 
 	"github.com/caddyserver/caddy/v2"
-	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
-	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"go.uber.org/zap"
 )
 
 func init() {
 	caddy.RegisterModule(Route{})
-	httpcaddyfile.RegisterHandlerDirective("llm_route", parseCaddyfile)
-	httpcaddyfile.RegisterDirectiveOrder("llm_route", httpcaddyfile.Before, "reverse_proxy")
 }
-
-// origModelVar holds the client's original model name once extracted from the
-// request body, so subsequent llm_route blocks match against the same value
-// (a failed upstream may have received a rewritten model name).
-const origModelVar = "llm_orig_model"
-
-// origBodyVar holds the original request body, read and parsed exactly once
-// by the first llm_route in the chain. Fallback blocks clone from this Body
-// instead of draining the one-shot request body again.
-const origBodyVar = "llm_orig_body"
 
 // fallthroughStatuses are the upstream response codes that trigger
 // fallthrough to the next llm_route. 5xx is implied.
@@ -57,11 +40,13 @@ type Route struct {
 	// rewrites the model name sent to this upstream.
 	Models []ModelRule `json:"models,omitempty"`
 
-	// Sub is the subchain executed (on a cloned request) when a rule
-	// matches. Any HTTP routes/handlers may be used.
-	Sub *caddyhttp.Subroute `json:"sub,omitempty"`
+	// SubRaw is the subchain executed (on a cloned request) when a rule
+	// matches — a standard subroute module. Loaded via the module machinery
+	// so the inline "handler" key is stripped before strict decoding.
+	SubRaw json.RawMessage `json:"sub,omitempty" caddy:"namespace=http.handlers inline_key=handler"`
 
-	logger *zap.Logger `json:"-"`
+	logger *zap.Logger         `json:"-"`
+	sub    *caddyhttp.Subroute `json:"-"`
 }
 
 // ModelRule matches the client model name and optionally rewrites it.
@@ -97,10 +82,19 @@ func (r *Route) Provision(ctx caddy.Context) error {
 			m.re = re
 		}
 	}
-	if r.Sub != nil {
-		if err := r.Sub.Provision(ctx); err != nil {
+	if r.SubRaw != nil {
+		mod, err := ctx.LoadModule(r, "SubRaw")
+		if err != nil {
+			return fmt.Errorf("loading subchain: %v", err)
+		}
+		sub, ok := mod.(*caddyhttp.Subroute)
+		if !ok {
+			return fmt.Errorf("subchain must be a subroute, got %T", mod)
+		}
+		if err := sub.Provision(ctx); err != nil {
 			return fmt.Errorf("provisioning llm_route subchain: %v", err)
 		}
+		r.sub = sub
 	}
 	return nil
 }
@@ -116,28 +110,19 @@ func (r *Route) ServeHTTP(w http.ResponseWriter, req *http.Request, next caddyht
 	// claude2openai, tracers) can type-assert it and work on the parsed
 	// object instead of re-reading bytes. The original request always keeps
 	// a readable body — downstream handlers must never see a drained body.
-	body, _ := caddyhttp.GetVar(req.Context(), origBodyVar).(*Body)
-	if body == nil {
-		if req.Method != http.MethodPost {
-			return next.ServeHTTP(w, req)
-		}
-		raw, err := io.ReadAll(io.LimitReader(req.Body, maxBodySize))
-		if err != nil || len(raw) == 0 {
-			return next.ServeHTTP(w, req)
-		}
-		b, err := FromBytes(raw)
-		if err != nil {
-			// Not a JSON object: pass through untouched.
-			resetBody(req, raw)
-			return next.ServeHTTP(w, req)
-		}
-		SetRequestBody(req, b)
-		caddyhttp.SetVar(req.Context(), origBodyVar, b)
-		caddyhttp.SetVar(req.Context(), origModelVar, extractModel(raw))
-		body = b
+	// A failed upstream may have received a rewritten model name, so blocks
+	// always match against the original object's model, never a clone's.
+	if req.Method != http.MethodPost {
+		return next.ServeHTTP(w, req)
+	}
+	body, err := FromBody(req)
+	if err != nil {
+		// Not a JSON object (or empty): pass through untouched —
+		// FromBody has already re-installed the raw bytes.
+		return next.ServeHTTP(w, req)
 	}
 
-	modelStr, _ := caddyhttp.GetVar(req.Context(), origModelVar).(string)
+	modelStr, _ := body.Obj["model"].(string)
 	rule, rewritten := r.match(modelStr)
 	if rule == nil {
 		// No rule matched: fall through, request untouched.
@@ -147,12 +132,12 @@ func (r *Route) ServeHTTP(w http.ResponseWriter, req *http.Request, next caddyht
 	// The clone gets a deep copy of the parsed object with the rule's model
 	// rewrite applied; the original request's body is never touched by the
 	// subchain, so a fallthrough hands the next block the pristine original.
-	cloneObj := deepCopyObj(body.Obj)
-	if rewritten != modelStr {
-		cloneObj["model"] = rewritten
-	}
 	clone := cloneRequest(req)
-	SetRequestBody(clone, New(cloneObj))
+	cloneBody := body.Clone()
+	if rewritten != modelStr {
+		cloneBody.Obj["model"] = rewritten
+	}
+	SetRequestBody(clone, cloneBody)
 
 	// Writer stack (response side, outermost first):
 	//   peekWriter — llm_route's fallthrough decision on the upstream status
@@ -160,7 +145,7 @@ func (r *Route) ServeHTTP(w http.ResponseWriter, req *http.Request, next caddyht
 	// handlers like claude2openai sit inside the subchain and wrap it
 	// themselves).
 	pw := &peekWriter{ResponseWriter: w}
-	err := r.Sub.ServeHTTP(pw, clone, next)
+	err = r.sub.ServeHTTP(pw, clone, next)
 
 	if err != nil || isFallthroughStatus(pw.status()) {
 		// The attempt failed: discard the response and fall through with the
@@ -191,28 +176,6 @@ func (r *Route) match(model string) (*ModelRule, string) {
 
 // ---------- helpers ----------
 
-// extractModel pulls the top-level "model" string out of a JSON body without
-// full unmarshalling.
-func extractModel(body []byte) string {
-	var probe struct {
-		Model string `json:"model"`
-	}
-	if err := json.Unmarshal(body, &probe); err != nil {
-		return ""
-	}
-	return probe.Model
-}
-
-// resetBody installs body as the request's body with length/GetBody rewired.
-func resetBody(r *http.Request, body []byte) {
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	r.ContentLength = int64(len(body))
-	r.Header.Set("Content-Length", strconv.Itoa(len(body)))
-	r.GetBody = func() (io.ReadCloser, error) {
-		return io.NopCloser(bytes.NewReader(body)), nil
-	}
-}
-
 // cloneRequest makes a semi-deep clone (headers/URL deep, rest shallow), the
 // same technique as reverseproxy's cloneRequest.
 func cloneRequest(origReq *http.Request) *http.Request {
@@ -231,7 +194,7 @@ func cloneRequest(origReq *http.Request) *http.Request {
 	if origReq.Trailer != nil {
 		req.Trailer = origReq.Trailer.Clone()
 	}
-	// The clone shares the context, so vars (orig model, trace IDs) carry in.
+	// The clone shares the context, so vars (trace IDs) carry in.
 	return req
 }
 
@@ -337,78 +300,3 @@ func (pw *peekWriter) Flush() {
 }
 
 var _ http.Flusher = (*peekWriter)(nil)
-
-// ---------- Caddyfile ----------
-
-func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error) {
-	var r Route
-	for h.Next() {
-		if h.NextArg() {
-			return nil, h.ArgErr()
-		}
-
-		// First pass: slice the block into segments; collect model rules and
-		// keep the remaining segments for the subchain.
-		var subSegments []caddyfile.Segment
-		for nesting := h.Nesting(); h.NextBlock(nesting); {
-			seg := h.NextSegment()
-			if len(seg) == 0 {
-				continue
-			}
-			switch string(seg[0].Text) {
-			case "model":
-				d := caddyfile.NewDispenser(seg)
-				d.Next() // consume "model"
-				args := d.RemainingArgs()
-				switch len(args) {
-				case 1:
-					r.Models = append(r.Models, ModelRule{Pattern: args[0]})
-				case 2:
-					r.Models = append(r.Models, ModelRule{Pattern: args[0], Replace: args[1]})
-				default:
-					return nil, h.Errf("model takes 1 arg (exact name) or 2 (pattern replacement)")
-				}
-			default:
-				subSegments = append(subSegments, seg)
-			}
-		}
-		if len(r.Models) == 0 {
-			return nil, h.Errf("llm_route requires at least one model rule")
-		}
-		if len(subSegments) == 0 {
-			return nil, h.Errf("llm_route requires a subchain (e.g. reverse_proxy)")
-		}
-
-		// Second pass: parse the remaining segments as a subroute (standard
-		// directive dispatch: matchers, handler ordering, nesting all work).
-		sub, err := parseSegmentsAsSubroute(h, subSegments)
-		if err != nil {
-			return nil, err
-		}
-		r.Sub = sub
-	}
-	return &r, nil
-}
-
-// parseSegmentsAsSubroute builds a subroute from raw segments by replaying
-// them through the standard Caddyfile machinery.
-func parseSegmentsAsSubroute(h httpcaddyfile.Helper, segments []caddyfile.Segment) (*caddyhttp.Subroute, error) {
-	// Flatten segments back into a token stream wrapped in a synthetic block,
-	// then delegate to ParseSegmentAsSubroute via a fresh Helper.
-	tokens := make([]caddyfile.Token, 0, 16)
-	for _, seg := range segments {
-		tokens = append(tokens, seg...)
-	}
-	d := caddyfile.NewDispenser(tokens)
-	h2 := h.WithDispenser(d)
-	h2.Prev() // position before the first token? ParseSegmentAsSubroute does its own Next()
-	mh, err := httpcaddyfile.ParseSegmentAsSubroute(h2)
-	if err != nil {
-		return nil, err
-	}
-	sub, ok := mh.(*caddyhttp.Subroute)
-	if !ok {
-		return nil, h.Errf("internal: expected Subroute, got %T", mh)
-	}
-	return sub, nil
-}

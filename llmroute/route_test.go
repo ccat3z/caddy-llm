@@ -105,18 +105,6 @@ func TestPeekWriter(t *testing.T) {
 	})
 }
 
-func TestExtractModel(t *testing.T) {
-	if got := extractModel([]byte(`{"model":"abc"}`)); got != "abc" {
-		t.Errorf("got %q", got)
-	}
-	if got := extractModel([]byte(`{"x":1}`)); got != "" {
-		t.Errorf("got %q", got)
-	}
-	if got := extractModel([]byte(`bad`)); got != "" {
-		t.Errorf("got %q", got)
-	}
-}
-
 // TestServeHTTPFallthrough drives the handler end-to-end with a scripted
 // subchain-free setup: use the exported ServeHTTP with a fake subchain via
 // Provision-less Subroute? Subroute needs provisioning; instead exercise the

@@ -3,7 +3,6 @@ package integration
 import (
 	"bytes"
 	"compress/gzip"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -38,24 +37,12 @@ func TestGzipUpstreamResponse(t *testing.T) {
 	}))
 	defer up.Close()
 	tester := caddytest.NewTester(t)
-	tester.InitServer(fmt.Sprintf(`
-	{
-		skip_install_trust
-		admin localhost:2999
-		http_port 8080
-	}
-	localhost:8080 {
-		route {
-			llm_route {
-				model glm-5.2
-				route {
-					claude2openai
-					reverse_proxy %s
-				}
-			}
-			respond "no-upstream" 404
-		}
-	}`, up.URL), "caddyfile")
+	tester.InitServer(jsonConfig(messagesRoute(
+		llmRoute([]map[string]any{
+			modelRule("glm-5.2", ""),
+		}, claude2openaiHandler(), proxyHandler(dial(up.URL), "")),
+		respondHandler(404, "no-upstream"),
+	)), "json")
 	for _, enc := range []string{"identity", "gzip", "gzip"} {
 		req, _ := http.NewRequest("POST", "http://localhost:8080/v1/messages",
 			strings.NewReader(`{"model":"glm-5.2","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`))

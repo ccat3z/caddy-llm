@@ -31,31 +31,7 @@ func TestFullChain(t *testing.T) {
 
 	traceDir := t.TempDir()
 	tester := caddytest.NewTester(t)
-	tester.InitServer(fmt.Sprintf(`
-		{
-			skip_install_trust
-			admin localhost:2999
-			http_port 8080
-			llm_tracer {
-				dir %s
-			}
-		}
-		localhost:8080 {
-			@claude path /v1/messages
-			handle @claude {
-				route {
-					trace claude
-					rewrite * /v1/chat/completions
-					claude2openai
-					trace openai
-					reverse_proxy %s
-				}
-			}
-			handle /llm/traces* {
-				llm_tracer_api
-			}
-			respond 404
-		}`, traceDir, upstream.URL), "caddyfile")
+	tester.InitServer(jsonConfigWithTracer(traceDir, upstream.URL), "json")
 
 	// Client request in Claude format.
 	resp, err := http.Post("http://localhost:8080/v1/messages", "application/json",

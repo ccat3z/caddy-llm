@@ -11,30 +11,64 @@ import (
 	"github.com/caddyserver/caddy/v2/caddytest"
 )
 
+// proxyConfig builds the JSON config: /v1/messages goes through
+// claude2openai to the upstream; sub-resources (/v1/messages/*) pass through
+// unmanaged; everything else 404s.
+func proxyConfig(upstreamDial string) string {
+	cfg := map[string]any{
+		"admin": map[string]any{"listen": "localhost:2999"},
+		"apps": map[string]any{
+			"http": map[string]any{
+				"http_port": 8080,
+				"servers": map[string]any{
+					"srv0": map[string]any{
+						"listen":          []string{":8080"},
+						"automatic_https": map[string]any{"disable": true},
+						"routes": []any{
+							map[string]any{
+								"match": []any{map[string]any{
+									"path":   []string{"/v1/messages"},
+									"method": []string{"POST"},
+								}},
+								"handle": []any{
+									map[string]any{"handler": "rewrite", "uri": "/v1/chat/completions"},
+									map[string]any{"handler": "claude2openai"},
+									map[string]any{
+										"handler":   "reverse_proxy",
+										"upstreams": []any{map[string]any{"dial": upstreamDial}},
+									},
+								},
+							},
+							// Anthropic sub-resources (count_tokens etc.) pass
+							// through unmanaged. JSON routes match in order, so
+							// this must precede nothing (exact path above) and
+							// follow the messages route.
+							map[string]any{
+								"match":  []any{map[string]any{"path": []string{"/v1/messages/*"}}},
+								"handle": []any{map[string]any{"handler": "reverse_proxy", "upstreams": []any{map[string]any{"dial": upstreamDial}}}},
+							},
+							map[string]any{
+								"handle": []any{map[string]any{"handler": "static_response", "status_code": 404}},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	b, err := json.Marshal(cfg)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
+}
+
 // startProxy launches a caddytest server proxying /v1/messages through
 // claude2openai to the given upstream.
 func startProxy(t *testing.T, upstreamURL string) *caddytest.Tester {
 	t.Helper()
 	tester := caddytest.NewTester(t)
-	tester.InitServer(`
-		{
-			skip_install_trust
-			admin localhost:2999
-			http_port 8080
-		}
-		localhost:8080 {
-			@claude path /v1/messages
-			handle @claude {
-				rewrite * /v1/chat/completions
-				claude2openai
-				reverse_proxy `+upstreamURL+`
-			}
-			# Anthropic sub-resources (count_tokens etc.) pass through unmanaged.
-			handle /v1/messages/* {
-				reverse_proxy `+upstreamURL+`
-			}
-			respond 404
-		}`, "caddyfile")
+	tester.InitServer(proxyConfig(strings.TrimPrefix(upstreamURL, "http://")), "json")
 	return tester
 }
 
@@ -199,18 +233,7 @@ func TestUnmatchedPathNotProxied(t *testing.T) {
 // without reaching the next handler.
 func TestInvalidClaudeBody(t *testing.T) {
 	tester := caddytest.NewTester(t)
-	tester.InitServer(`
-		{
-			skip_install_trust
-			admin localhost:2999
-			http_port 8080
-		}
-		localhost:8080 {
-			route {
-				claude2openai
-				respond "unreachable" 200
-			}
-		}`, "caddyfile")
+	tester.InitServer(`{"admin":{"listen":"localhost:2999"},"apps":{"http":{"http_port":8080,"servers":{"srv0":{"listen":[":8080"],"automatic_https":{"disable":true},"routes":[{"handle":[{"handler":"claude2openai"},{"handler":"static_response","status_code":200,"body":"unreachable"}]}]}}}}}`, "json")
 
 	status, body := post(t, tester, "/v1/messages", `{not json`)
 	if status != 400 {

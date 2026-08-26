@@ -1,0 +1,68 @@
+{
+	"admin": {
+		"listen": "localhost:2019"
+	},
+	"apps": {
+		"llm_tracer": {
+			"dir": "/var/lib/caddy/llm-traces"
+		},
+		"http": {
+			"http_port": 8080,
+			"servers": {
+				"claude-proxy": {
+					"listen": [":8080"],
+					"automatic_https": {
+						"disable": true
+					},
+					"routes": [
+						{
+							"match": [
+								{
+									"path": ["/v1/messages"],
+									"method": ["POST"]
+								}
+							],
+							"handle": [
+								{
+									"handler": "trace",
+									"stage": "claude"
+								},
+								{
+									"handler": "rewrite",
+									"uri": "/v1/chat/completions"
+								},
+								{
+									"handler": "claude2openai"
+								},
+								{
+									"handler": "trace",
+									"stage": "openai"
+								},
+								{
+									"handler": "reverse_proxy",
+									"upstreams": [
+										{
+											"dial": "open.bigmodel.cn:443"
+										}
+									]
+								}
+							]
+						},
+						{
+							"match": [
+								{
+									"path": ["/llm/traces*"]
+								}
+							],
+							"handle": [
+								{
+									"handler": "llm_tracer_api"
+								}
+							]
+						}
+					]
+				}
+			}
+		}
+	}
+}
