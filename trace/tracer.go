@@ -111,11 +111,9 @@ func (t *Tracer) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 	}
 	var body []byte
 	if r.Body != nil {
-		if jb, ok := r.Body.(*llmroute.Body); ok {
-			// Marshal freezes the wire bytes from the parsed object without
-			// disturbing r.Body's read state, so downstream handlers keep
-			// both the type to assert against and a readable body — and the
-			// bytes are marshaled exactly once.
+		if jb, ok := r.Body.(*llmroute.ReadOnlyJsonBody); ok {
+			// Marshal is a pure snapshot: it caches the wire bytes from the
+			// (immutable) object without disturbing r.Body's read state.
 			raw, err := jb.Marshal()
 			if err != nil {
 				return err
@@ -128,12 +126,7 @@ func (t *Tracer) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 			}
 			body = raw
 			// Restore for downstream consumption.
-			r.Body = io.NopCloser(bytes.NewReader(body))
-			r.ContentLength = int64(len(body))
-			r.Header.Set("Content-Length", strconv.Itoa(len(body)))
-			r.GetBody = func() (io.ReadCloser, error) {
-				return io.NopCloser(bytes.NewReader(body)), nil
-			}
+			llmroute.SetRawRequestBody(r, body)
 		}
 	}
 	if s != nil && len(body) > 0 {

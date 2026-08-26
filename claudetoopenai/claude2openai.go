@@ -11,8 +11,8 @@ import (
 	"io"
 	"net/http"
 	"strconv"
-	"sync"
 	"strings"
+	"sync"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
@@ -60,15 +60,14 @@ func (c *Claude2OpenAI) ServeHTTP(w http.ResponseWriter, r *http.Request, next c
 		return next.ServeHTTP(w, r)
 	}
 
-	// The body always ends up as an llmroute.Body: one that llm_route
-	// installed is reused, anything else is read once and parsed here. The
-	// object is then translated in place; the wire form marshals on demand.
+	// The body always ends up as an llmroute body: one that llm_route
+	// installed is reused, anything else is read once and parsed here.
+	// Translation installs a NEW body with the translated object — bodies
+	// are immutable, so the original stays intact for anyone holding it
+	// (and a fallthrough up the chain sees the pristine request).
 	jb, err := llmroute.FromBody(r)
 	if err != nil {
 		return c.writeClaudeError(w, http.StatusBadRequest, "invalid_request_error", "read request body: "+err.Error())
-	}
-	if jb.Readonly() {
-		return c.writeClaudeError(w, http.StatusInternalServerError, "api_error", "request body already consumed before translation")
 	}
 	stream, _ := jb.Obj["stream"].(bool)
 	model, _ := jb.Obj["model"].(string)
@@ -76,7 +75,7 @@ func (c *Claude2OpenAI) ServeHTTP(w http.ResponseWriter, r *http.Request, next c
 	if err != nil {
 		return c.writeClaudeError(w, http.StatusBadRequest, "invalid_request_error", "translate request: "+err.Error())
 	}
-	jb.Obj = outMap
+	llmroute.SetRequestBody(r, llmroute.New(outMap))
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Del("Anthropic-Version")
 	r.Header.Del("Anthropic-Beta")

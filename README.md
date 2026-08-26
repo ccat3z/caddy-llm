@@ -88,15 +88,17 @@ Behavior:
 ### Programmatic body access
 
 After the first llm_route (or `claude2openai` — it converts if needed), the
-request body is a `*llmroute.Body`: the parsed JSON object (`Body.Obj`, a
-`map[string]any`) is the authoritative body. Handlers in the chain can
-type-assert it and read or mutate the object directly — no byte reads, no
-re-parsing (`claude2openai` and `trace` both use this). Regular
-`io.ReadCloser` consumption keeps working: the bytes are marshaled from the
-object once, on first read. After that the bytes are frozen — check
-`Body.Readonly()` before mutating `Obj`. Since the length is only known at
-marshal time, requests are sent chunked (`ContentLength` -1) with `GetBody`
-serving retries from the frozen bytes.
+request body is a `*llmroute.ReadOnlyJsonBody`: the parsed JSON object
+(`Obj`, a `map[string]any`) plus lazily-marshaled wire bytes. **Bodies are
+immutable**: to change one, build a new body (shallow or deep copy of Obj,
+whatever the change needs) and install it with `llmroute.SetRequestBody` —
+never mutate in place. Because a value never changes under anyone holding
+it, a matched llm_route can share the request's body with its subchain
+(no copy), and a fallthrough always sees the last value installed, never a
+mutated alias. Regular `io.ReadCloser` consumption keeps working: the bytes
+marshal from the object on first read; `Marshal` is a pure snapshot.
+Requests are sent chunked (`ContentLength` -1) with `GetBody` serving
+retries from the cached bytes.
 
 ## How it works
 
@@ -225,10 +227,10 @@ Known hot-path costs and their status (correctness-safe, all optional):
   freezes the wire bytes without disturbing the read cursor, so the
   tracer snapshots the request without re-marshaling and without
   consuming the body.
-- **Deep clone per routing attempt** *(deferred)*: every matched
-  `llm_route` block deep-copies the whole parsed body (a 96KB Claude Code
-  request is ~4–6k map/slice nodes), even when nothing downstream mutates
-  it.
+- **No copies on the routing path** *(fixed)*: bodies are immutable
+  (`ReadOnlyJsonBody`), so a matched block shares the request's body with
+  its subchain; only a model rewrite builds a variant (a top-level shallow
+  copy). The old per-attempt deep clone is gone.
 - **Tool schemas re-parsed per request** *(deferred)*:
   `normalizeSchema` parses and re-marshals every tool's input schema on
   every request, even though Claude Code sends byte-identical schemas each

@@ -132,14 +132,24 @@ func (r *Route) ServeHTTP(w http.ResponseWriter, req *http.Request, next caddyht
 		return next.ServeHTTP(w, req)
 	}
 
-	// The clone gets a deep copy of the parsed object with the rule's model
-	// rewrite applied; the original request's body is never touched by the
-	// subchain, so a fallthrough hands the next block the pristine original.
+	// The clone's body: bodies are immutable, so a rule without a rewrite
+	// shares the original — a fallthrough still sees it pristine, because
+	// any handler that "changes" the body installs a new one on the request
+	// instead of mutating. With a rewrite only the top-level model key
+	// changes, so a top-level shallow copy carries the variant.
 	clone := cloneRequest(req)
-	cloneBody := body.Clone()
+	cloneBody := body
 	if rewritten != modelStr {
-		cloneBody.Obj["model"] = rewritten
+		obj := make(map[string]any, len(body.Obj))
+		for k, v := range body.Obj {
+			obj[k] = v
+		}
+		obj["model"] = rewritten
+		cloneBody = New(obj)
 	}
+	// Always reinstall as a set: the struct copy in cloneRequest would
+	// otherwise carry the original request's GetBody (serving the original
+	// body) alongside the clone's Body.
 	SetRequestBody(clone, cloneBody)
 
 	// Writer stack (response side, outermost first):

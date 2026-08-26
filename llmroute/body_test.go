@@ -4,47 +4,32 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
-func TestBodyReadSemantics(t *testing.T) {
+func TestReadSemantics(t *testing.T) {
 	b, err := FromBytes([]byte(`{"model":"glm-5.2"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b.Readonly() {
-		t.Error("fresh body must be mutable")
-	}
 
-	// Mutations before the first Read are reflected in the bytes.
-	b.Obj["model"] = "renamed"
 	out, err := io.ReadAll(b)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(out) != `{"model":"renamed"}` {
+	if string(out) != `{"model":"glm-5.2"}` {
 		t.Errorf("read = %s", out)
 	}
-
-	// After a full read: EOF, and mutations no longer take effect.
 	if _, err := b.Read(make([]byte, 8)); err != io.EOF {
 		t.Errorf("post-EOF read err = %v", err)
 	}
-	if !b.Readonly() {
-		t.Error("Read must freeze the body")
-	}
-	b.Obj["model"] = "ignored"
-	out2, _ := io.ReadAll(b)
-	if string(out2) != "" {
-		t.Errorf("frozen body re-read = %s, want empty", out2)
-	}
-
 	if err := b.Close(); err != nil {
 		t.Errorf("close = %v", err)
 	}
 }
 
-func TestBodyReadIsStreamed(t *testing.T) {
+func TestReadIsStreamed(t *testing.T) {
 	b := New(map[string]any{"k": "vvvvvvvv"})
 	buf := make([]byte, 4)
 	n, err := b.Read(buf)
@@ -68,7 +53,57 @@ func TestFromBytesRejectsNonObject(t *testing.T) {
 	}
 }
 
-func TestSetRequestBodyRetrySemantics(t *testing.T) {
+func TestMarshalIsPureSnapshot(t *testing.T) {
+	b := New(map[string]any{"k": "vvvv"})
+
+	// Partial read first: 4 of the 11 wire bytes.
+	buf := make([]byte, 4)
+	n, err := b.Read(buf)
+	if err != nil || string(buf[:n]) != `{"k"` {
+		t.Fatalf("partial read = %q %v", buf[:n], err)
+	}
+
+	// Marshal returns the FULL bytes without disturbing the cursor.
+	raw, err := b.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != `{"k":"vvvv"}` {
+		t.Errorf("Marshal = %s", raw)
+	}
+
+	// Read CONTINUES from the cursor, not from the start.
+	rest, err := io.ReadAll(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := `{"k"` + string(rest); got != `{"k":"vvvv"}` {
+		t.Errorf("read after Marshal = %s, want continuation", got)
+	}
+
+	// Marshal is stable: same bytes again.
+	raw2, _ := b.Marshal()
+	if string(raw2) != string(raw) {
+		t.Errorf("Marshal not stable: %s vs %s", raw2, raw)
+	}
+}
+
+func TestMarshalBeforeAnyRead(t *testing.T) {
+	b := New(map[string]any{"a": float64(1)})
+	raw, err := b.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != `{"a":1}` {
+		t.Errorf("Marshal = %s", raw)
+	}
+	out, err := io.ReadAll(b)
+	if err != nil || string(out) != `{"a":1}` {
+		t.Errorf("Read after Marshal = %s %v", out, err)
+	}
+}
+
+func TestSetRequestBodyInstallSemantics(t *testing.T) {
 	b, err := FromBytes([]byte(`{"model":"m"}`))
 	if err != nil {
 		t.Fatal(err)
@@ -83,7 +118,7 @@ func TestSetRequestBodyRetrySemantics(t *testing.T) {
 		t.Error("Content-Length header must be dropped")
 	}
 	if req.Body != io.ReadCloser(b) {
-		t.Error("req.Body must be the Body itself")
+		t.Error("req.Body must be the body itself")
 	}
 
 	// Each GetBody call serves the full bytes with an independent reader.
@@ -99,10 +134,6 @@ func TestSetRequestBodyRetrySemantics(t *testing.T) {
 		if string(out) != `{"model":"m"}` {
 			t.Errorf("GetBody #%d = %s", i, out)
 		}
-	}
-	// GetBody froze the bytes: mutations are now ineffective (and harmless).
-	if !b.Readonly() {
-		t.Error("GetBody must freeze the body")
 	}
 }
 
@@ -120,90 +151,77 @@ func TestSetRequestBodyRegularReadStillWorks(t *testing.T) {
 	}
 }
 
-func TestCloneIsolation(t *testing.T) {
+// TestShallowVariantIsolation locks the immutability contract as llm_route
+// relies on it: a rewritten-model variant built from a top-level shallow
+// copy shares nested values with the original (both stay read-only), and
+// installing a NEW body on a request never disturbs another request (or the
+// original body object) — the property the old Clone-based design got from
+// deep copies.
+func TestShallowVariantIsolation(t *testing.T) {
 	orig := New(map[string]any{
-		"model":    "m",
-		"messages": []any{map[string]any{"role": "user", "parts": []any{"x"}}},
-		"meta":     map[string]any{"nested": map[string]any{"deep": true}},
+		"model":    "mc/glm-5.2",
+		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
 	})
-	clone := orig.Clone()
 
-	clone.Obj["model"] = "changed"
-	clone.Obj["messages"].([]any)[0].(map[string]any)["role"] = "assistant"
-	clone.Obj["messages"].([]any)[0].(map[string]any)["parts"].([]any)[0] = "y"
-	clone.Obj["meta"].(map[string]any)["nested"].(map[string]any)["deep"] = false
+	// llm_route's variant: shallow top-level copy with the model rewritten.
+	obj := make(map[string]any, len(orig.Obj))
+	for k, v := range orig.Obj {
+		obj[k] = v
+	}
+	obj["model"] = "glm-5.2"
+	variant := New(obj)
 
-	if orig.Obj["model"] != "m" {
-		t.Errorf("shallow leak: model = %v", orig.Obj["model"])
+	if variant.Obj["model"] != "glm-5.2" {
+		t.Fatalf("variant model = %v", variant.Obj["model"])
 	}
-	msg := orig.Obj["messages"].([]any)[0].(map[string]any)
-	if msg["role"] != "user" || msg["parts"].([]any)[0] != "x" {
-		t.Errorf("slice leak: %v", msg)
-	}
-	if orig.Obj["meta"].(map[string]any)["nested"].(map[string]any)["deep"] != true {
-		t.Error("nested map leak")
+	// The original is untouched — this is what makes fallthrough safe.
+	if orig.Obj["model"] != "mc/glm-5.2" {
+		t.Errorf("original model mutated: %v", orig.Obj["model"])
 	}
 
-	// A clone of an already-frozen body is mutable again.
-	out, _ := io.ReadAll(orig)
-	if len(out) == 0 {
-		t.Error("orig read empty")
-	}
-	if clone.Readonly() {
-		t.Error("clone of frozen body must be mutable")
+	// A handler "modifying" the body installs a new one; the request seen
+	// by the next handler carries the new value, and a request still
+	// holding the variant reads the variant.
+	reqA := httptest.NewRequest(http.MethodPost, "/", nil)
+	SetRequestBody(reqA, variant)
+	reqB := httptest.NewRequest(http.MethodPost, "/", nil)
+	SetRequestBody(reqB, New(map[string]any{"model": "replaced"}))
+	outA, _ := io.ReadAll(reqA.Body)
+	if !strings.Contains(string(outA), `"model":"glm-5.2"`) {
+		t.Errorf("reqA body = %s (model must stay glm-5.2)", outA)
 	}
 }
 
-// TestMarshalFreezesWithoutDisturbingRead locks the Marshal contract: it
-// freezes the bytes (later Obj mutations ineffective) but leaves the read
-// cursor alone — a partially-read body continues from where it was.
-func TestMarshalFreezesWithoutDisturbingRead(t *testing.T) {
-	b := New(map[string]any{"k": "vvvv"})
-
-	// Partial read first: 4 of the 11 wire bytes.
-	buf := make([]byte, 4)
-	n, err := b.Read(buf)
-	if err != nil || string(buf[:n]) != `{"k"` {
-		t.Fatalf("partial read = %q %v", buf[:n], err)
-	}
-
-	// Marshal now: returns the FULL bytes, freezes them.
-	raw, err := b.Marshal()
+// TestFromBodyIdempotent: an already-installed body is returned as is.
+func TestFromBodyIdempotent(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	orig := New(map[string]any{"x": float64(1)})
+	SetRequestBody(req, orig)
+	b, err := FromBody(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(raw) != `{"k":"vvvv"}` {
-		t.Errorf("Marshal = %s", raw)
-	}
-	if !b.Readonly() {
-		t.Error("Marshal must freeze")
-	}
-
-	// Obj mutations are now ineffective (frozen)...
-	b.Obj["k"] = "ignored"
-	// ...and Read CONTINUES from the cursor, not from the start.
-	rest, err := io.ReadAll(b)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := `{"k"` + string(rest); got != `{"k":"vvvv"}` {
-		t.Errorf("read after Marshal = %s, want continuation of frozen bytes", got)
+	if b != orig {
+		t.Error("FromBody must return the installed body unchanged")
 	}
 }
 
-// TestMarshalBeforeAnyRead: Marshal on a fresh body, then Read serves the
-// same frozen bytes from the beginning.
-func TestMarshalBeforeAnyRead(t *testing.T) {
-	b := New(map[string]any{"a": float64(1)})
-	raw, err := b.Marshal()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(raw) != `{"a":1}` {
-		t.Errorf("Marshal = %s", raw)
-	}
-	out, err := io.ReadAll(b)
-	if err != nil || string(out) != `{"a":1}` {
-		t.Errorf("Read after Marshal = %s %v", out, err)
-	}
+// TestFromBodyErrors keeps the error paths' readability contract.
+func TestFromBodyErrors(t *testing.T) {
+	t.Run("non-JSON body stays readable", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("not json"))
+		if _, err := FromBody(req); err == nil {
+			t.Error("non-JSON body should fail")
+		}
+		out, err := io.ReadAll(req.Body)
+		if err != nil || string(out) != "not json" {
+			t.Errorf("body must be re-installed readable, got %q %v", out, err)
+		}
+	})
+	t.Run("empty body errors", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(""))
+		if _, err := FromBody(req); err == nil {
+			t.Error("empty body should fail")
+		}
+	})
 }

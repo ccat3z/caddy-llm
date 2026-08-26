@@ -9,25 +9,32 @@ import (
 	"strconv"
 )
 
-// Body is an in-memory JSON request body: the parsed object is authoritative.
-// Handlers in the chain can type-assert it to read or modify the JSON without
-// byte-level reads; it also satisfies io.ReadCloser for regular consumption
-// (the bytes are marshaled from the object once, on first Read).
-type Body struct {
-	// Obj is the authoritative parsed JSON object. It may be read at any
-	// time; mutating it is only effective while Readonly() is false, i.e.
-	// before the first Read (or GetBody call) has frozen the bytes.
+// ReadOnlyJsonBody is an immutable, parsed JSON request body. Obj and the
+// wire bytes never change after construction; the wire form is lazy — it is
+// marshaled from Obj once, on first consumption (Read, Marshal, or GetBody),
+// then cached. The lazy initialization assumes a single consuming goroutine,
+// the same contract http request bodies have.
+//
+// To "modify" a body, build a new one — from a shallow or deep copy of Obj,
+// whichever the change needs — and install it with SetRequestBody. The
+// request's Body is the single source of truth: a fallthrough always sees
+// the last value installed, never a mutated alias, so sharing one body
+// across attempts is safe and copies are only needed where a value actually
+// changes.
+type ReadOnlyJsonBody struct {
+	// Obj is the parsed JSON object. Immutable by convention from
+	// construction on: New takes ownership, so callers must not mutate it
+	// (at any depth) after handing it over.
 	Obj map[string]any
 
-	// data is the marshal-once byte form: nil until the body is first
-	// consumed, non-nil (frozen) afterwards.
-	data []byte
-	off  int
-	eof  bool
+	// raw is the lazy wire form: nil until first needed, then fixed.
+	raw []byte
+	off int
+	eof bool
 }
 
 // FromBytes parses raw as a JSON object.
-func FromBytes(raw []byte) (*Body, error) {
+func FromBytes(raw []byte) (*ReadOnlyJsonBody, error) {
 	var obj map[string]any
 	if err := json.Unmarshal(raw, &obj); err != nil {
 		return nil, err
@@ -38,54 +45,46 @@ func FromBytes(raw []byte) (*Body, error) {
 	return New(obj), nil
 }
 
-// New wraps an already-parsed JSON object. The map is owned by the Body from
+// New wraps an already-parsed JSON object. The map is owned by the body from
 // here on; callers must not retain or mutate it.
-func New(obj map[string]any) *Body { return &Body{Obj: obj} }
+func New(obj map[string]any) *ReadOnlyJsonBody { return &ReadOnlyJsonBody{Obj: obj} }
 
-// Readonly reports whether the wire bytes are already fixed: once the body
-// has been Read (or handed out via GetBody), mutating Obj no longer has any
-// effect. Check this before modifying Obj.
-func (b *Body) Readonly() bool { return b.data != nil }
-
-// Marshal returns the body's wire bytes, freezing them from Obj if not
-// already frozen. Freezing does NOT disturb the read state: a body that
-// has been partially (or fully) Read keeps its cursor, and Read continues
-// serving from the frozen bytes. Use this to snapshot the bytes (e.g. for
-// tracing) exactly once instead of re-marshaling per consumer; note that
-// like Read it makes later Obj mutations ineffective.
-func (b *Body) Marshal() ([]byte, error) {
+// Marshal returns the body's wire bytes, marshaling them from Obj if not
+// already cached. A pure snapshot: it does not disturb the read cursor, and
+// caching has no observable effect since Obj never changes.
+func (b *ReadOnlyJsonBody) Marshal() ([]byte, error) {
 	if err := b.marshal(); err != nil {
 		return nil, err
 	}
-	return b.data, nil
+	return b.raw, nil
 }
 
-// marshal freezes the byte form from Obj.
-func (b *Body) marshal() error {
-	if b.data != nil {
+// marshal caches the wire form from Obj.
+func (b *ReadOnlyJsonBody) marshal() error {
+	if b.raw != nil {
 		return nil
 	}
 	raw, err := json.Marshal(b.Obj)
 	if err != nil {
 		return err
 	}
-	b.data = raw
+	b.raw = raw
 	return nil
 }
 
-// Read streams the marshaled bytes; the first call freezes them.
-func (b *Body) Read(p []byte) (int, error) {
+// Read streams the wire bytes; the first call marshals and caches them.
+func (b *ReadOnlyJsonBody) Read(p []byte) (int, error) {
 	if b.eof {
 		return 0, io.EOF
 	}
-	if b.data == nil {
+	if b.raw == nil {
 		if err := b.marshal(); err != nil {
 			return 0, err
 		}
 	}
-	n := copy(p, b.data[b.off:])
+	n := copy(p, b.raw[b.off:])
 	b.off += n
-	if b.off >= len(b.data) {
+	if b.off >= len(b.raw) {
 		b.eof = true
 	}
 	if n == 0 {
@@ -95,17 +94,17 @@ func (b *Body) Read(p []byte) (int, error) {
 }
 
 // Close is a no-op; the bytes live in memory.
-func (b *Body) Close() error { return nil }
+func (b *ReadOnlyJsonBody) Close() error { return nil }
 
-var _ io.ReadCloser = (*Body)(nil)
+var _ io.ReadCloser = (*ReadOnlyJsonBody)(nil)
 
-// FromBody converts the request's body into its parsed *Body form: it reads
-// the current body once, parses it as a JSON object, and installs the result
-// via SetRequestBody. A request already carrying a *Body is returned as is.
-// When the body is empty or not a JSON object, the raw bytes are re-installed
-// unchanged and the error describes the failure.
-func FromBody(r *http.Request) (*Body, error) {
-	if b, ok := r.Body.(*Body); ok {
+// FromBody converts the request's body into its parsed form: it reads the
+// current body once, parses it as a JSON object, and installs the result
+// via SetRequestBody. A request already carrying a *ReadOnlyJsonBody is
+// returned as is. When the body is empty or not a JSON object, the raw
+// bytes are re-installed unchanged and the error describes the failure.
+func FromBody(r *http.Request) (*ReadOnlyJsonBody, error) {
+	if b, ok := r.Body.(*ReadOnlyJsonBody); ok {
 		return b, nil
 	}
 	if r.Body == nil {
@@ -139,48 +138,18 @@ func SetRawRequestBody(r *http.Request, raw []byte) {
 	}
 }
 
-// SetRequestBody installs b as the request's body. The length is only known
-// once the bytes are marshaled, so the request is switched to chunked
-// transfer (ContentLength -1) and GetBody serves retries from the frozen
+// SetRequestBody installs b as the request's body. The wire length is only
+// known once the bytes are marshaled, so the request is switched to chunked
+// transfer (ContentLength -1) and GetBody serves retries from the cached
 // bytes with a fresh reader each call.
-func SetRequestBody(r *http.Request, b *Body) {
+func SetRequestBody(r *http.Request, b *ReadOnlyJsonBody) {
 	r.Body = b
 	r.ContentLength = -1
 	r.Header.Del("Content-Length")
 	r.GetBody = func() (io.ReadCloser, error) {
-		if b.data == nil {
-			if err := b.marshal(); err != nil {
-				return nil, err
-			}
+		if err := b.marshal(); err != nil {
+			return nil, err
 		}
-		return io.NopCloser(bytes.NewReader(b.data)), nil
-	}
-}
-
-// Clone returns an independent copy of the body's parsed object: mutations
-// of the clone (or its Obj) never affect the original. The clone is always
-// mutable (not frozen), even if the original has already been read.
-func (b *Body) Clone() *Body {
-	return New(cloneValue(b.Obj).(map[string]any))
-}
-
-// cloneValue recursively copies a parsed JSON value (maps, slices, and the
-// scalar types json.Unmarshal produces).
-func cloneValue(v any) any {
-	switch t := v.(type) {
-	case map[string]any:
-		out := make(map[string]any, len(t))
-		for k, e := range t {
-			out[k] = cloneValue(e)
-		}
-		return out
-	case []any:
-		out := make([]any, len(t))
-		for i, e := range t {
-			out[i] = cloneValue(e)
-		}
-		return out
-	default:
-		return v
+		return io.NopCloser(bytes.NewReader(b.raw)), nil
 	}
 }
