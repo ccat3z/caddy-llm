@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	caddyllm "github.com/ccat3z/caddy-llm"
+	caddyllm "github.com/ccat3z/caddy-llm/internal"
 	"github.com/ccat3z/caddy-llm/claudetoopenai"
 )
 

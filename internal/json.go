@@ -1,5 +1,6 @@
-// Package caddy_llm hosts the LazyJsonNode lazy-JSON value type.
-package caddy_llm
+// Package internal hosts the LazyJsonNode lazy-JSON value type and the
+// JsonReqBody HTTP request body built on it.
+package internal
 
 import (
 	"bytes"

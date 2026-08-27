@@ -1,4 +1,4 @@
-package caddy_llm
+package internal
 
 import (
 	"bytes"

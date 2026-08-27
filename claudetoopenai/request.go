@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	caddyllm "github.com/ccat3z/caddy-llm"
+	caddyllm "github.com/ccat3z/caddy-llm/internal"
 )
 
 // TranslateRequest converts an Anthropic Messages API request body into an

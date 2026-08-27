@@ -198,11 +198,11 @@ client-facing response):
 Package layout:
 
 ```
-json.go                   LazyJsonNode: lazy JSON value (root package)
-req.go                    JsonReqBody: the HTTP request body over a node
+internal/                 LazyJsonNode (json.go): lazy JSON value;
+                          JsonReqBody (req.go): the HTTP request body over a node
 claudetoopenai/           claude2openai handler + the Anthropic↔OpenAI
                           translation (request on nodes + response/stream)
-llmroute/                 llm_route handler + the JSON body type
+llmroute/                 llm_route handler (model routing + fallthrough)
 trace/                    trace handler + llm_tracer app + query API
 integration/              full-chain integration tests (JSON configs)
 integration/cpa/          CLIProxyAPI regression tests, sanitized cases,
