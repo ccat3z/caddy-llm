@@ -88,12 +88,12 @@ Behavior:
 ### Programmatic body access
 
 After the first llm_route (or `claude2openai` — it converts if needed), the
-request body is a `*llmroute.ReadOnlyJsonBody` wrapping an
+request body is a `JsonReqBody` wrapping an
 `LazyJsonNode` (root package): a lazily-parsed JSON value where **construction is
 free** and each accessor (`Get`/`Obj`/`List`/scalars) parses only what it
 needs, once, promoting the node's form (raw bytes → one-level segmentation →
 scalars). Bodies are immutable: `With` replaces at any path and returns a
-new node (siblings shared), installed with `llmroute.SetRequestBody`. A
+new node (siblings shared), installed with `SetRequestBody`. A
 matched llm_route shares the request's body with its subchain — no copy —
 and a fallthrough always sees the last value installed. Regular
 `io.ReadCloser` consumption keeps working; a body constructed from bytes
@@ -198,7 +198,8 @@ client-facing response):
 Package layout:
 
 ```
-jsonnode.go               LazyJsonNode: lazy JSON value (root package)
+json.go                   LazyJsonNode: lazy JSON value (root package)
+req.go                    JsonReqBody: the HTTP request body over a node
 claudetoopenai/           claude2openai handler + the Anthropic↔OpenAI
                           translation (request on nodes + response/stream)
 llmroute/                 llm_route handler + the JSON body type
@@ -228,12 +229,12 @@ Known hot-path costs and their status (correctness-safe, all optional):
 - **Only one held-open file handle** *(fixed)*: reads open history files
   transiently (`Get` opens, reads, closes); nothing accumulates over
   rotations.
-- **Body bytes marshaled once** *(fixed)*: `llmroute.Body.Marshal`
+- **Body bytes marshaled once** *(fixed)*: `JsonReqBody.Marshal`
   freezes the wire bytes without disturbing the read cursor, so the
   tracer snapshots the request without re-marshaling and without
   consuming the body.
 - **No copies on the routing path** *(fixed)*: bodies are immutable
-  (`ReadOnlyJsonBody`), so a matched block shares the request's body with
+  (`JsonReqBody`), so a matched block shares the request's body with
   its subchain; only a model rewrite builds a variant (a top-level shallow
   copy). The old per-attempt deep clone is gone.
 - **Tool schemas re-parsed per request** *(fixed by the node-domain

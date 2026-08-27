@@ -15,7 +15,7 @@ import (
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"go.uber.org/zap"
 
-	"github.com/ccat3z/caddy-llm/llmroute"
+	caddyllm "github.com/ccat3z/caddy-llm"
 )
 
 func init() {
@@ -111,7 +111,7 @@ func (t *Tracer) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 	}
 	var body []byte
 	if r.Body != nil {
-		if jb, ok := r.Body.(*llmroute.ReadOnlyJsonBody); ok {
+		if jb, ok := r.Body.(*caddyllm.JsonReqBody); ok {
 			// Marshal is a pure snapshot: it caches the wire bytes from the
 			// (immutable) object without disturbing r.Body's read state.
 			raw, err := jb.Marshal()
@@ -126,7 +126,7 @@ func (t *Tracer) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 			}
 			body = raw
 			// Restore for downstream consumption.
-			llmroute.SetRawRequestBody(r, body)
+			caddyllm.SetRawRequestBody(r, body)
 		}
 	}
 	if s != nil && len(body) > 0 {

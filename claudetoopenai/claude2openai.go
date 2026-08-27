@@ -18,7 +18,7 @@ import (
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"go.uber.org/zap"
 
-	"github.com/ccat3z/caddy-llm/llmroute"
+	caddyllm "github.com/ccat3z/caddy-llm"
 )
 
 func init() {
@@ -64,7 +64,7 @@ func (c *Claude2OpenAI) ServeHTTP(w http.ResponseWriter, r *http.Request, next c
 	// Translation installs a NEW body with the translated object — bodies
 	// are immutable, so the original stays intact for anyone holding it
 	// (and a fallthrough up the chain sees the pristine request).
-	jb, err := llmroute.FromBody(r)
+	jb, err := caddyllm.FromBody(r)
 	if err != nil {
 		return c.writeClaudeError(w, http.StatusBadRequest, "invalid_request_error", "read request body: "+err.Error())
 	}
@@ -74,7 +74,7 @@ func (c *Claude2OpenAI) ServeHTTP(w http.ResponseWriter, r *http.Request, next c
 	if err != nil {
 		return c.writeClaudeError(w, http.StatusBadRequest, "invalid_request_error", "translate request: "+err.Error())
 	}
-	llmroute.SetRequestBody(r, &llmroute.ReadOnlyJsonBody{LazyJsonNode: *outNode})
+	caddyllm.SetRequestBody(r, &caddyllm.JsonReqBody{LazyJsonNode: *outNode})
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Del("Anthropic-Version")
 	r.Header.Del("Anthropic-Beta")

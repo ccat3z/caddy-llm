@@ -11,6 +11,7 @@ package llmroute
 import (
 	"encoding/json"
 	"fmt"
+	caddyllm "github.com/ccat3z/caddy-llm"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -105,8 +106,6 @@ func (r *Route) Provision(ctx caddy.Context) error {
 // Interface guard
 var _ caddyhttp.MiddlewareHandler = (*Route)(nil)
 
-const maxBodySize = 128 << 20 // 128MB
-
 func (r *Route) ServeHTTP(w http.ResponseWriter, req *http.Request, next caddyhttp.Handler) error {
 	// The body is read and parsed exactly once per request, here, and
 	// re-installed as a *Body: later handlers (llm_route fallback blocks,
@@ -118,7 +117,7 @@ func (r *Route) ServeHTTP(w http.ResponseWriter, req *http.Request, next caddyht
 	if req.Method != http.MethodPost {
 		return next.ServeHTTP(w, req)
 	}
-	body, err := FromBody(req)
+	body, err := caddyllm.FromBody(req)
 	if err != nil {
 		// Not a JSON object (or empty): pass through untouched —
 		// FromBody has already re-installed the raw bytes.
@@ -142,12 +141,12 @@ func (r *Route) ServeHTTP(w http.ResponseWriter, req *http.Request, next caddyht
 	cloneBody := body
 	if rewritten != modelStr {
 		variant := body.With("model", rewritten)
-		cloneBody = &ReadOnlyJsonBody{LazyJsonNode: *variant}
+		cloneBody = &caddyllm.JsonReqBody{LazyJsonNode: *variant}
 	}
 	// Always reinstall as a set: the struct copy in cloneRequest would
 	// otherwise carry the original request's GetBody (serving the original
 	// body) alongside the clone's Body.
-	SetRequestBody(clone, cloneBody)
+	caddyllm.SetRequestBody(clone, cloneBody)
 
 	// Writer stack (response side, outermost first):
 	//   peekWriter — llm_route's fallthrough decision on the upstream status

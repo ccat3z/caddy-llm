@@ -1,4 +1,4 @@
-package llmroute
+package caddy_llm
 
 import (
 	"bytes"
@@ -7,20 +7,20 @@ import (
 	"io"
 	"net/http"
 	"strconv"
-
-	caddyllm "github.com/ccat3z/caddy-llm"
 )
 
-// ReadOnlyJsonBody is an immutable, lazily-parsed JSON request body. The
-// embedded caddyllm.LazyJsonNode gives on-demand access (Get/Obj/List/With)
+const maxBodySize = 128 << 20 // 128MB
+
+// JsonReqBody is an immutable, lazily-parsed JSON request body. The
+// embedded LazyJsonNode gives on-demand access (Get/Obj/List/With)
 // with per-node lazy parsing; this wrapper adds the HTTP/io side. The raw
 // cache keeps the wire bytes stable once materialized, so the Read cursor
 // (and GetBody retries) always serve the same bytes.
 //
 // To "modify" a body, build a new one (With on the node returns a new node)
 // and install it with SetRequestBody. Bodies are never mutated in place.
-type ReadOnlyJsonBody struct {
-	caddyllm.LazyJsonNode // embedded; field name is LazyJsonNode
+type JsonReqBody struct {
+	LazyJsonNode // embedded; field name is LazyJsonNode
 	// raw caches the materialized wire bytes: set at construction when the
 	// body came from bytes, or produced once by Marshal. Keeps Read's
 	// cursor consistent across repeated Marshal/Read/GetBody calls.
@@ -31,14 +31,14 @@ type ReadOnlyJsonBody struct {
 
 // NewJsonBody wraps raw bytes: construction is free (no parsing), the first
 // accessor decides what gets parsed.
-func NewJsonBody(raw []byte) *ReadOnlyJsonBody {
-	return &ReadOnlyJsonBody{LazyJsonNode: caddyllm.LazyJsonNode{Val: json.RawMessage(raw)}}
+func NewJsonBody(raw []byte) *JsonReqBody {
+	return &JsonReqBody{LazyJsonNode: LazyJsonNode{Val: json.RawMessage(raw)}}
 }
 
 // Marshal returns the body's wire bytes, encoding them once from the node's
 // current form if the body was built from values. The result is cached, so
 // repeated calls (and Read/GetBody) serve identical bytes.
-func (b *ReadOnlyJsonBody) Marshal() ([]byte, error) {
+func (b *JsonReqBody) Marshal() ([]byte, error) {
 	if b.raw == nil {
 		raw, err := b.LazyJsonNode.Marshal()
 		if err != nil {
@@ -50,7 +50,7 @@ func (b *ReadOnlyJsonBody) Marshal() ([]byte, error) {
 }
 
 // Read streams the wire bytes (materializing them on first use).
-func (b *ReadOnlyJsonBody) Read(p []byte) (int, error) {
+func (b *JsonReqBody) Read(p []byte) (int, error) {
 	if b.eof {
 		return 0, io.EOF
 	}
@@ -70,7 +70,7 @@ func (b *ReadOnlyJsonBody) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-func (b *ReadOnlyJsonBody) materialize() error {
+func (b *JsonReqBody) materialize() error {
 	raw, err := b.LazyJsonNode.Marshal()
 	if err != nil {
 		return err
@@ -80,16 +80,16 @@ func (b *ReadOnlyJsonBody) materialize() error {
 }
 
 // Close is a no-op; the bytes live in memory.
-func (b *ReadOnlyJsonBody) Close() error { return nil }
+func (b *JsonReqBody) Close() error { return nil }
 
-var _ io.ReadCloser = (*ReadOnlyJsonBody)(nil)
+var _ io.ReadCloser = (*JsonReqBody)(nil)
 
 // NewJsonBodyFromBytes parses raw as a JSON object.
-func NewJsonBodyFromBytes(raw []byte) (*ReadOnlyJsonBody, error) {
+func NewJsonBodyFromBytes(raw []byte) (*JsonReqBody, error) {
 	b := NewJsonBody(raw)
 	// Validate: the router and translator both assume a top-level object.
-	if t := b.Type(); t != caddyllm.TypeObject {
-		if t == caddyllm.TypeNull {
+	if t := b.Type(); t != TypeObject {
+		if t == TypeNull {
 			return nil, io.ErrUnexpectedEOF
 		}
 		return nil, fmt.Errorf("request body is not a JSON object")
@@ -98,12 +98,12 @@ func NewJsonBodyFromBytes(raw []byte) (*ReadOnlyJsonBody, error) {
 }
 
 // FromBody converts the request's body into its parsed form: it reads the
-// current body once and installs a *ReadOnlyJsonBody over the bytes. A
+// current body once and installs a *JsonReqBody over the bytes. A
 // request already carrying one is returned as is. When the body is empty or
 // not a JSON object, the raw bytes are re-installed unchanged and the error
 // describes the failure.
-func FromBody(r *http.Request) (*ReadOnlyJsonBody, error) {
-	if b, ok := r.Body.(*ReadOnlyJsonBody); ok {
+func FromBody(r *http.Request) (*JsonReqBody, error) {
+	if b, ok := r.Body.(*JsonReqBody); ok {
 		return b, nil
 	}
 	if r.Body == nil {
@@ -141,7 +141,7 @@ func SetRawRequestBody(r *http.Request, raw []byte) {
 // known once the bytes are marshaled, so the request is switched to chunked
 // transfer (ContentLength -1) and GetBody serves retries from the cached
 // bytes with a fresh reader each call.
-func SetRequestBody(r *http.Request, b *ReadOnlyJsonBody) {
+func SetRequestBody(r *http.Request, b *JsonReqBody) {
 	r.Body = b
 	r.ContentLength = -1
 	r.Header.Del("Content-Length")

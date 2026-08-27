@@ -1,4 +1,4 @@
-package llmroute
+package caddy_llm
 
 import (
 	"io"
@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	caddyllm "github.com/ccat3z/caddy-llm"
 )
 
 func TestReadSemantics(t *testing.T) {
@@ -91,7 +90,7 @@ func TestMarshalCachesStableBytes(t *testing.T) {
 // first Marshal encodes the variant (untouched members keep original bytes).
 func TestVariantBodyEncodesFresh(t *testing.T) {
 	orig := NewJsonBody([]byte(`{"model":"mc/x","keep":{"a":[1,2]}}`))
-	variant := &ReadOnlyJsonBody{LazyJsonNode: *orig.With("model", "glm-5.2")}
+	variant := &JsonReqBody{LazyJsonNode: *orig.With("model", "glm-5.2")}
 
 	out, err := io.ReadAll(variant)
 	if err != nil {
@@ -173,7 +172,7 @@ func TestFromBodyIdempotent(t *testing.T) {
 	if x, ok := b.Get("x").Int(); !ok || x != 1 {
 		t.Errorf("Get(x) = %v %v", x, ok)
 	}
-	if b.Type() != caddyllm.TypeObject {
+	if b.Type() != TypeObject {
 		t.Errorf("Type = %v", b.Type())
 	}
 }
