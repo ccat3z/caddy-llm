@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ccat3z/caddy-llm/internal"
+	"github.com/ccat3z/caddy-llm/internal/trans"
 	"github.com/ccat3z/caddy-llm/translate"
 )
 
@@ -39,19 +41,16 @@ func TestTestdataRequestTranslation(t *testing.T) {
 	for _, name := range []string{"stream_text.log", "stream_tool_use.log", "stream_thinking.log", "nonstream_tool_use.log"} {
 		t.Run(name, func(t *testing.T) {
 			lg := loadCase(t, name)
-			var in translate.AnthropicRequest
-			if err := json.Unmarshal(lg.RequestBody, &in); err != nil {
-				t.Fatalf("client body: %v", err)
-			}
-			got, err := translate.TranslateRequest(&in)
+			in := &internal.LazyJsonNode{Val: json.RawMessage(lg.RequestBody)}
+			got, err := trans.TranslateRequest(in)
 			if err != nil {
 				t.Fatalf("TranslateRequest: %v", err)
 			}
-			out, err := json.Marshal(got)
+			out, err := got.Marshal()
 			if err != nil {
 				t.Fatal(err)
 			}
-			golden := normalizeGoldenOverrides(lg.APIRequests[0].Body, &in)
+			golden := normalizeGoldenOverrides(lg.APIRequests[0].Body, lg.RequestBody)
 			assertJSONDiffEq(t, "translated request", golden, out)
 		})
 	}

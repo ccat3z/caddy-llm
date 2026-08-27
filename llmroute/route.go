@@ -125,7 +125,7 @@ func (r *Route) ServeHTTP(w http.ResponseWriter, req *http.Request, next caddyht
 		return next.ServeHTTP(w, req)
 	}
 
-	modelStr, _ := body.Obj["model"].(string)
+	modelStr, _ := body.Get("model").String()
 	rule, rewritten := r.match(modelStr)
 	if rule == nil {
 		// No rule matched: fall through, request untouched.
@@ -135,17 +135,14 @@ func (r *Route) ServeHTTP(w http.ResponseWriter, req *http.Request, next caddyht
 	// The clone's body: bodies are immutable, so a rule without a rewrite
 	// shares the original — a fallthrough still sees it pristine, because
 	// any handler that "changes" the body installs a new one on the request
-	// instead of mutating. With a rewrite only the top-level model key
-	// changes, so a top-level shallow copy carries the variant.
+	// instead of mutating. A rewrite replaces just the top-level model key;
+	// untouched members keep their original bytes (With builds the variant
+	// over the node's one-level segmentation).
 	clone := cloneRequest(req)
 	cloneBody := body
 	if rewritten != modelStr {
-		obj := make(map[string]any, len(body.Obj))
-		for k, v := range body.Obj {
-			obj[k] = v
-		}
-		obj["model"] = rewritten
-		cloneBody = NewJsonBody(obj)
+		variant := body.With("model", rewritten)
+		cloneBody = &ReadOnlyJsonBody{LazyJsonNode: *variant}
 	}
 	// Always reinstall as a set: the struct copy in cloneRequest would
 	// otherwise carry the original request's GetBody (serving the original

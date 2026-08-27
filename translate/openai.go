@@ -4,26 +4,6 @@ import "encoding/json"
 
 // ---------- OpenAI chat-completions wire types ----------
 
-// OpenAIRequest is an OpenAI chat-completions request body.
-type OpenAIRequest struct {
-	Model           string          `json:"model"`
-	Messages        []OpenAIMessage `json:"messages,omitempty"`
-	Tools           []OpenAITool    `json:"tools,omitempty"`
-	ToolChoice      json.RawMessage `json:"tool_choice,omitempty"` // string or object
-	MaxTokens       int             `json:"max_tokens,omitempty"`
-	Temperature     *float64        `json:"temperature,omitempty"`
-	TopP            *float64        `json:"top_p,omitempty"`
-	Stop            json.RawMessage `json:"stop,omitempty"` // string or []string
-	Stream          bool            `json:"stream"`
-	StreamOptions   *StreamOptions  `json:"stream_options,omitempty"`
-	ReasoningEffort string          `json:"reasoning_effort,omitempty"`
-}
-
-// StreamOptions toggles stream extras.
-type StreamOptions struct {
-	IncludeUsage bool `json:"include_usage"`
-}
-
 // OpenAIMessage is one message in the messages array.
 type OpenAIMessage struct {
 	Role       string           `json:"role"`              // system | user | assistant | tool

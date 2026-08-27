@@ -9,7 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ccat3z/caddy-llm/translate"
+	"github.com/ccat3z/caddy-llm/internal"
+	"github.com/ccat3z/caddy-llm/internal/trans"
 )
 
 // logsDir is the CLIProxyAPI CLIProxyAPI regression log set, controlled by CPA_LOG_DIR
@@ -71,8 +72,8 @@ func regressionFiles(t *testing.T) []string {
 }
 
 // TestCliProxyAPIRegressionRequest replays (client Claude request -> upstream
-// OpenAI request) pairs from real logs through translate.TranslateRequest and compares
-// semantically (unmarshal + reflect.DeepEqual) against what CLIProxyAPI sent.
+// OpenAI request) pairs from real logs through the node-domain translator
+// (internal/trans) and compares semantically against what CLIProxyAPI sent.
 func TestCliProxyAPIRegressionRequest(t *testing.T) {
 	files := regressionFiles(t)
 	if len(files) == 0 {
@@ -88,15 +89,12 @@ func TestCliProxyAPIRegressionRequest(t *testing.T) {
 			continue
 		}
 		t.Run(name, func(t *testing.T) {
-			var in translate.AnthropicRequest
-			if err := json.Unmarshal(lg.RequestBody, &in); err != nil {
-				t.Skipf("unparseable client body: %v", err)
-			}
-			out, err := translate.TranslateRequest(&in)
+			in := &internal.LazyJsonNode{Val: json.RawMessage(lg.RequestBody)}
+			out, err := trans.TranslateRequest(in)
 			if err != nil {
-				t.Fatalf("translate.TranslateRequest: %v", err)
+				t.Fatalf("trans.TranslateRequest: %v", err)
 			}
-			got, err := json.Marshal(out)
+			got, err := out.Marshal()
 			if err != nil {
 				t.Fatalf("marshal: %v", err)
 			}
@@ -104,24 +102,8 @@ func TestCliProxyAPIRegressionRequest(t *testing.T) {
 			// max_tokens: 128000 for glm-5.1) after translation. Our translator
 			// passes the client's value through, so normalize the golden's
 			// max_tokens back to the client's before comparing.
-			golden := normalizeGoldenOverrides(lg.APIRequests[0].Body, &in)
+			golden := normalizeGoldenOverrides(lg.APIRequests[0].Body, lg.RequestBody)
 			assertJSONDiffEq(t, "translated request", golden, got)
-
-			// The map-native path must produce the same wire form (this is
-			// what the llmroute.Body fast path in claudetoopenai uses).
-			var inMap map[string]any
-			if err := json.Unmarshal(lg.RequestBody, &inMap); err != nil {
-				t.Skipf("unparseable client body (map): %v", err)
-			}
-			outMap, err := translate.TranslateRequestMap(inMap)
-			if err != nil {
-				t.Fatalf("translate.TranslateRequestMap: %v", err)
-			}
-			gotMap, err := json.Marshal(outMap)
-			if err != nil {
-				t.Fatalf("marshal map path: %v", err)
-			}
-			assertJSONDiffEq(t, "translated request (map path)", golden, gotMap)
 		})
 		ran++
 	}
@@ -194,22 +176,28 @@ func parseLogFile(name string) (*Log, error) {
 // upstream body back to pure-translation semantics:
 //   - max_tokens may have been overridden by the deployment's payload rules
 //   - model may have had a provider prefix stripped (e.g. "friday/glm-5.2")
-func normalizeGoldenOverrides(golden []byte, in *translate.AnthropicRequest) []byte {
+func normalizeGoldenOverrides(golden, clientBody []byte) []byte {
+	var client map[string]any
+	if err := json.Unmarshal(clientBody, &client); err != nil {
+		return golden
+	}
 	var m map[string]any
 	if err := json.Unmarshal(golden, &m); err != nil {
 		return golden
 	}
 	changed := false
-	if mt, ok := m["max_tokens"].(float64); ok && in.MaxTokens > 0 && int(mt) != in.MaxTokens {
-		m["max_tokens"] = in.MaxTokens
+	clientMax, _ := client["max_tokens"].(float64)
+	clientModel, _ := client["model"].(string)
+	if mt, ok := m["max_tokens"].(float64); ok && clientMax > 0 && int(mt) != int(clientMax) {
+		m["max_tokens"] = int(clientMax)
 		changed = true
 	}
-	if gm, ok := m["model"].(string); ok && in.Model != "" && gm != in.Model &&
-		strings.HasSuffix(in.Model, "/"+gm) {
+	if gm, ok := m["model"].(string); ok && clientModel != "" && gm != clientModel &&
+		strings.HasSuffix(clientModel, "/"+gm) {
 		// The deployment stripped a provider prefix ("friday/glm-5.2" ->
 		// "glm-5.2"); our translation passes the client name through, so
 		// compare against the client's name.
-		m["model"] = in.Model
+		m["model"] = clientModel
 		changed = true
 	}
 	if !changed {

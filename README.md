@@ -88,17 +88,23 @@ Behavior:
 ### Programmatic body access
 
 After the first llm_route (or `claude2openai` — it converts if needed), the
-request body is a `*llmroute.ReadOnlyJsonBody`: the parsed JSON object
-(`Obj`, a `map[string]any`) plus lazily-marshaled wire bytes. **Bodies are
-immutable**: to change one, build a new body (shallow or deep copy of Obj,
-whatever the change needs) and install it with `llmroute.SetRequestBody` —
-never mutate in place. Because a value never changes under anyone holding
-it, a matched llm_route can share the request's body with its subchain
-(no copy), and a fallthrough always sees the last value installed, never a
-mutated alias. Regular `io.ReadCloser` consumption keeps working: the bytes
-marshal from the object on first read; `Marshal` is a pure snapshot.
+request body is a `*llmroute.ReadOnlyJsonBody` wrapping an
+`internal.LazyJsonNode`: a lazily-parsed JSON value where **construction is
+free** and each accessor (`Get`/`Obj`/`List`/scalars) parses only what it
+needs, once, promoting the node's form (raw bytes → one-level segmentation →
+scalars). Bodies are immutable: `With` replaces at any path and returns a
+new node (siblings shared), installed with `llmroute.SetRequestBody`. A
+matched llm_route shares the request's body with its subchain — no copy —
+and a fallthrough always sees the last value installed. Regular
+`io.ReadCloser` consumption keeps working; a body constructed from bytes
+serves them verbatim (trace captures are the client's original bytes).
 Requests are sent chunked (`ContentLength` -1) with `GetBody` serving
 retries from the cached bytes.
+
+Request translation itself (`internal/trans`) operates on nodes directly:
+only the parts the translation reads get parsed, and untouched subtrees
+(messages, tool schemas) are inlined into the translated output as their
+original bytes.
 
 ## How it works
 
@@ -178,9 +184,8 @@ Two layers of translation tests, both driven by CLIProxyAPI request logs
 client-facing response):
 
 1. **CLIProxyAPI regression tests** (`integration/cpa`) replay the real log
-   directory — every recorded exchange becomes a regression case, in both
-   the struct path (`TranslateRequest`) and the map path
-   (`TranslateRequestMap`) — from `CPA_LOG_DIR` (default:
+   directory — every recorded exchange becomes a regression case for the
+   node-domain translator (`internal/trans`) — from `CPA_LOG_DIR` (default:
    `../CLIproxyAPI/data/logs`); tests skip when absent. Controls:
    - `CPA_REGRESSION_SAMPLE=N` — number of files to test (default 300)
    - `CPA_REGRESSION_ALL=1` — every file (~20k verified pairs, ~1 min)
@@ -231,10 +236,10 @@ Known hot-path costs and their status (correctness-safe, all optional):
   (`ReadOnlyJsonBody`), so a matched block shares the request's body with
   its subchain; only a model rewrite builds a variant (a top-level shallow
   copy). The old per-attempt deep clone is gone.
-- **Tool schemas re-parsed per request** *(deferred)*:
-  `normalizeSchema` parses and re-marshals every tool's input schema on
-  every request, even though Claude Code sends byte-identical schemas each
-  time; memoizing by raw bytes removes it.
+- **Tool schemas re-parsed per request** *(fixed by the node-domain
+  rewrite)*: request translation now walks `LazyJsonNode`s — untouched
+  subtrees (including tool schemas) are never parsed and are inlined into
+  the output as their original bytes.
 
 ## Status / limitations
 

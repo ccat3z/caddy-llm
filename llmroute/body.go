@@ -7,78 +7,55 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+
+	"github.com/ccat3z/caddy-llm/internal"
 )
 
-// ReadOnlyJsonBody is an immutable, parsed JSON request body. Obj and the
-// wire bytes never change after construction; the wire form is lazy — it is
-// marshaled from Obj once, on first consumption (Read, Marshal, or GetBody),
-// then cached. The lazy initialization assumes a single consuming goroutine,
-// the same contract http request bodies have.
+// ReadOnlyJsonBody is an immutable, lazily-parsed JSON request body. The
+// embedded internal.LazyJsonNode gives on-demand access (Get/Obj/List/With)
+// with per-node lazy parsing; this wrapper adds the HTTP/io side. The raw
+// cache keeps the wire bytes stable once materialized, so the Read cursor
+// (and GetBody retries) always serve the same bytes.
 //
-// To "modify" a body, build a new one — from a shallow or deep copy of Obj,
-// whichever the change needs — and install it with SetRequestBody. The
-// request's Body is the single source of truth: a fallthrough always sees
-// the last value installed, never a mutated alias, so sharing one body
-// across attempts is safe and copies are only needed where a value actually
-// changes.
+// To "modify" a body, build a new one (With on the node returns a new node)
+// and install it with SetRequestBody. Bodies are never mutated in place.
 type ReadOnlyJsonBody struct {
-	// Obj is the parsed JSON object. Immutable by convention from
-	// construction on: NewJsonBody takes ownership, so callers must not mutate it
-	// (at any depth) after handing it over.
-	Obj map[string]any
-
-	// raw is the lazy wire form: nil until first needed, then fixed.
+	internal.LazyJsonNode
+	// raw caches the materialized wire bytes: set at construction when the
+	// body came from bytes, or produced once by Marshal. Keeps Read's
+	// cursor consistent across repeated Marshal/Read/GetBody calls.
 	raw []byte
 	off int
 	eof bool
 }
 
-// NewJsonBodyFromBytes parses raw as a JSON object.
-func NewJsonBodyFromBytes(raw []byte) (*ReadOnlyJsonBody, error) {
-	var obj map[string]any
-	if err := json.Unmarshal(raw, &obj); err != nil {
-		return nil, err
-	}
-	if obj == nil { // "null" unmarshals to a nil map without error
-		return nil, io.ErrUnexpectedEOF
-	}
-	return NewJsonBody(obj), nil
+// NewJsonBody wraps raw bytes: construction is free (no parsing), the first
+// accessor decides what gets parsed.
+func NewJsonBody(raw []byte) *ReadOnlyJsonBody {
+	return &ReadOnlyJsonBody{LazyJsonNode: internal.LazyJsonNode{Val: json.RawMessage(raw)}}
 }
 
-// NewJsonBody wraps an already-parsed JSON object. The map is owned by the
-// body from here on; callers must not retain or mutate it.
-func NewJsonBody(obj map[string]any) *ReadOnlyJsonBody { return &ReadOnlyJsonBody{Obj: obj} }
-
-// Marshal returns the body's wire bytes, marshaling them from Obj if not
-// already cached. A pure snapshot: it does not disturb the read cursor, and
-// caching has no observable effect since Obj never changes.
+// Marshal returns the body's wire bytes, encoding them once from the node's
+// current form if the body was built from values. The result is cached, so
+// repeated calls (and Read/GetBody) serve identical bytes.
 func (b *ReadOnlyJsonBody) Marshal() ([]byte, error) {
-	if err := b.marshal(); err != nil {
-		return nil, err
+	if b.raw == nil {
+		raw, err := b.LazyJsonNode.Marshal()
+		if err != nil {
+			return nil, err
+		}
+		b.raw = raw
 	}
 	return b.raw, nil
 }
 
-// marshal caches the wire form from Obj.
-func (b *ReadOnlyJsonBody) marshal() error {
-	if b.raw != nil {
-		return nil
-	}
-	raw, err := json.Marshal(b.Obj)
-	if err != nil {
-		return err
-	}
-	b.raw = raw
-	return nil
-}
-
-// Read streams the wire bytes; the first call marshals and caches them.
+// Read streams the wire bytes (materializing them on first use).
 func (b *ReadOnlyJsonBody) Read(p []byte) (int, error) {
 	if b.eof {
 		return 0, io.EOF
 	}
 	if b.raw == nil {
-		if err := b.marshal(); err != nil {
+		if err := b.materialize(); err != nil {
 			return 0, err
 		}
 	}
@@ -93,16 +70,38 @@ func (b *ReadOnlyJsonBody) Read(p []byte) (int, error) {
 	return n, nil
 }
 
+func (b *ReadOnlyJsonBody) materialize() error {
+	raw, err := b.LazyJsonNode.Marshal()
+	if err != nil {
+		return err
+	}
+	b.raw = raw
+	return nil
+}
+
 // Close is a no-op; the bytes live in memory.
 func (b *ReadOnlyJsonBody) Close() error { return nil }
 
 var _ io.ReadCloser = (*ReadOnlyJsonBody)(nil)
 
+// NewJsonBodyFromBytes parses raw as a JSON object.
+func NewJsonBodyFromBytes(raw []byte) (*ReadOnlyJsonBody, error) {
+	b := NewJsonBody(raw)
+	// Validate: the router and translator both assume a top-level object.
+	if t := b.Type(); t != internal.TypeObject {
+		if t == internal.TypeNull {
+			return nil, io.ErrUnexpectedEOF
+		}
+		return nil, fmt.Errorf("request body is not a JSON object")
+	}
+	return b, nil
+}
+
 // FromBody converts the request's body into its parsed form: it reads the
-// current body once, parses it as a JSON object, and installs the result
-// via SetRequestBody. A request already carrying a *ReadOnlyJsonBody is
-// returned as is. When the body is empty or not a JSON object, the raw
-// bytes are re-installed unchanged and the error describes the failure.
+// current body once and installs a *ReadOnlyJsonBody over the bytes. A
+// request already carrying one is returned as is. When the body is empty or
+// not a JSON object, the raw bytes are re-installed unchanged and the error
+// describes the failure.
 func FromBody(r *http.Request) (*ReadOnlyJsonBody, error) {
 	if b, ok := r.Body.(*ReadOnlyJsonBody); ok {
 		return b, nil
@@ -147,7 +146,7 @@ func SetRequestBody(r *http.Request, b *ReadOnlyJsonBody) {
 	r.ContentLength = -1
 	r.Header.Del("Content-Length")
 	r.GetBody = func() (io.ReadCloser, error) {
-		if err := b.marshal(); err != nil {
+		if err := b.materialize(); err != nil {
 			return nil, err
 		}
 		return io.NopCloser(bytes.NewReader(b.raw)), nil
