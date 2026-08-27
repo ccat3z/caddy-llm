@@ -6,7 +6,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-
 )
 
 func TestReadSemantics(t *testing.T) {

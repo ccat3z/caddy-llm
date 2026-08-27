@@ -19,12 +19,14 @@ import (
 // The parsing state is carried by Val's concrete type:
 //
 //	json.RawMessage             → unparsed (construction / sub-node)
-//	map[string]json.RawMessage  → object segmented, nested still bytes (first Obj/Get/Keys/Len)
-//	[]json.RawMessage           → array segmented (first List/Len)
+//	map[string]any              → object segmented: member values are raw
+//	                             bytes (nested content unparsed) or Go values
+//	[]any                       → array segmented, likewise
 //	string / json.Number / bool / nil → scalar resolved (first String/Bool/...)
 //
-// Any other Go value is allowed when the node is constructed from one; it
-// marshals as-is.
+// A node constructed from a Go map or slice is already in segmented form —
+// no conversion happens; members wrap into sub-nodes lazily on access. Any
+// other Go value marshals as-is.
 type LazyJsonNode struct {
 	Val any
 }
@@ -79,6 +81,10 @@ func (n *LazyJsonNode) Type() Type {
 		return TypeObject
 	case []json.RawMessage:
 		return TypeArray
+	case map[string]any:
+		return TypeObject
+	case []any:
+		return TypeArray
 	case string:
 		return TypeString
 	case json.Number:
@@ -108,70 +114,75 @@ func firstByte(raw json.RawMessage) byte {
 // ---------- promotion ----------
 
 // promoteObject segments a raw object one level: each member value stays
-// raw bytes (nested content unparsed). Idempotent; returns nil when the
-// node is not an object.
-func (n *LazyJsonNode) promoteObject() (*LazyJsonNode, map[string]json.RawMessage, bool) {
+// raw bytes (nested content unparsed). A Go-constructed map is already a
+// valid segmented form and passes through untouched. Idempotent; returns
+// false when the node is not an object.
+func (n *LazyJsonNode) promoteObject() (*LazyJsonNode, map[string]any, bool) {
 	switch v := n.Val.(type) {
-	case map[string]json.RawMessage:
+	case map[string]any:
 		return n, v, true
+	case map[string]json.RawMessage:
+		m := make(map[string]any, len(v))
+		for k, e := range v {
+			m[k] = e // nil stays nil: explicit JSON null
+		}
+		n.Val = m
+		return n, m, true
 	case json.RawMessage:
 		if firstByte(v) != '{' {
 			return nil, nil, false
 		}
-		var m map[string]json.RawMessage
-		if err := json.Unmarshal(v, &m); err != nil {
+		// Unmarshal into map[string]json.RawMessage: the standard library
+		// splits one level only, nested values keep their bytes (laziness).
+		var rm map[string]json.RawMessage
+		if err := json.Unmarshal(v, &rm); err != nil {
 			return nil, nil, false
 		}
-		if m == nil { // "null" object literal
+		if rm == nil { // "null" object literal
 			return nil, nil, false
+		}
+		m := make(map[string]any, len(rm))
+		for k, e := range rm {
+			m[k] = e // nil stays nil: explicit JSON null
 		}
 		n.Val = m
 		return n, m, true
-	case map[string]any:
-		rm := make(map[string]json.RawMessage, len(v))
-		for k, e := range v {
-			rm[k] = mustMarshalValue(e)
-		}
-		n.Val = rm
-		return n, rm, true
 	default:
 		return nil, nil, false
 	}
 }
 
-// promoteArray segments a raw array one level.
-func (n *LazyJsonNode) promoteArray() (*LazyJsonNode, []json.RawMessage, bool) {
+// promoteArray segments a raw array one level. A Go-constructed slice is
+// already a valid segmented form and passes through untouched.
+func (n *LazyJsonNode) promoteArray() (*LazyJsonNode, []any, bool) {
 	switch v := n.Val.(type) {
-	case []json.RawMessage:
+	case []any:
 		return n, v, true
+	case []json.RawMessage:
+		a := make([]any, len(v))
+		for i, e := range v {
+			a[i] = e // nil stays nil: explicit JSON null
+		}
+		n.Val = a
+		return n, a, true
 	case json.RawMessage:
 		if firstByte(v) != '[' {
 			return nil, nil, false
 		}
-		var a []json.RawMessage
-		if err := json.Unmarshal(v, &a); err != nil {
+		// One level only: element values keep their bytes (laziness).
+		var ra []json.RawMessage
+		if err := json.Unmarshal(v, &ra); err != nil {
 			return nil, nil, false
+		}
+		a := make([]any, len(ra))
+		for i, e := range ra {
+			a[i] = e
 		}
 		n.Val = a
 		return n, a, true
-	case []any:
-		rm := make([]json.RawMessage, len(v))
-		for i, e := range v {
-			rm[i] = mustMarshalValue(e)
-		}
-		n.Val = rm
-		return n, rm, true
 	default:
 		return nil, nil, false
 	}
-}
-
-func mustMarshalValue(v any) json.RawMessage {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return json.RawMessage("null")
-	}
-	return b
 }
 
 // ---------- scalar accessors (promote to scalar) ----------
@@ -425,14 +436,14 @@ func (n *LazyJsonNode) withChild(head string, v any) *LazyJsonNode {
 // node (nil node removes the member).
 func (n *LazyJsonNode) withNode(head string, node *LazyJsonNode) *LazyJsonNode {
 	if _, m, ok := n.promoteObject(); ok {
-		out := make(map[string]json.RawMessage, len(m)+1)
+		out := make(map[string]any, len(m)+1)
 		for k, e := range m {
 			out[k] = e
 		}
 		if node == nil {
 			delete(out, head)
 		} else {
-			out[head] = mustMarshalValue(node.Val)
+			out[head] = node.Val
 		}
 		return &LazyJsonNode{Val: out}
 	}
@@ -441,12 +452,12 @@ func (n *LazyJsonNode) withNode(head string, node *LazyJsonNode) *LazyJsonNode {
 		if err != nil || idx < 0 || idx >= len(a) {
 			return n // index out of range: unchanged
 		}
-		out := make([]json.RawMessage, len(a))
+		out := make([]any, len(a))
 		copy(out, a)
 		if node == nil {
-			out[idx] = json.RawMessage("null")
+			out[idx] = nil
 		} else {
-			out[idx] = mustMarshalValue(node.Val)
+			out[idx] = node.Val
 		}
 		return &LazyJsonNode{Val: out}
 	}
