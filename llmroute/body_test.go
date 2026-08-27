@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ccat3z/caddy-llm/internal"
+	caddyllm "github.com/ccat3z/caddy-llm"
 )
 
 func TestReadSemantics(t *testing.T) {
@@ -173,7 +173,7 @@ func TestFromBodyIdempotent(t *testing.T) {
 	if x, ok := b.Get("x").Int(); !ok || x != 1 {
 		t.Errorf("Get(x) = %v %v", x, ok)
 	}
-	if b.Type() != internal.TypeObject {
+	if b.Type() != caddyllm.TypeObject {
 		t.Errorf("Type = %v", b.Type())
 	}
 }

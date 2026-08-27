@@ -1,8 +1,8 @@
 // Package translate converts the OpenAI Chat Completions wire format into
 // the Anthropic Messages API wire format (the response/stream direction).
-// Request translation lives in internal/trans. This is a pure library with
+// Request translation lives in internal/ This is a pure library with
 // no Caddy dependencies.
-package trans
+package claudetoopenai
 
 import "encoding/json"
 

@@ -89,7 +89,7 @@ Behavior:
 
 After the first llm_route (or `claude2openai` — it converts if needed), the
 request body is a `*llmroute.ReadOnlyJsonBody` wrapping an
-`internal.LazyJsonNode`: a lazily-parsed JSON value where **construction is
+`LazyJsonNode` (root package): a lazily-parsed JSON value where **construction is
 free** and each accessor (`Get`/`Obj`/`List`/scalars) parses only what it
 needs, once, promoting the node's form (raw bytes → one-level segmentation →
 scalars). Bodies are immutable: `With` replaces at any path and returns a
@@ -101,7 +101,7 @@ serves them verbatim (trace captures are the client's original bytes).
 Requests are sent chunked (`ContentLength` -1) with `GetBody` serving
 retries from the cached bytes.
 
-Request translation itself (`internal/trans`) operates on nodes directly:
+Request translation itself operates on nodes directly:
 only the parts the translation reads get parsed, and untouched subtrees
 (messages, tool schemas) are inlined into the translated output as their
 original bytes.
@@ -185,7 +185,7 @@ client-facing response):
 
 1. **CLIProxyAPI regression tests** (`integration/cpa`) replay the real log
    directory — every recorded exchange becomes a regression case for the
-   node-domain translator (`internal/trans`) — from `CPA_LOG_DIR` (default:
+   node-domain translator — from `CPA_LOG_DIR` (default:
    `../CLIproxyAPI/data/logs`); tests skip when absent. Controls:
    - `CPA_REGRESSION_SAMPLE=N` — number of files to test (default 300)
    - `CPA_REGRESSION_ALL=1` — every file (~20k verified pairs, ~1 min)
@@ -198,10 +198,9 @@ client-facing response):
 Package layout:
 
 ```
-internal/                 LazyJsonNode: lazy JSON value (nodes)
-internal/trans/           translation (Anthropic↔OpenAI, request on nodes +
-                          response/stream)
-claudetoopenai/           claude2openai handler
+jsonnode.go               LazyJsonNode: lazy JSON value (root package)
+claudetoopenai/           claude2openai handler + the Anthropic↔OpenAI
+                          translation (request on nodes + response/stream)
 llmroute/                 llm_route handler + the JSON body type
 trace/                    trace handler + llm_tracer app + query API
 integration/              full-chain integration tests (JSON configs)

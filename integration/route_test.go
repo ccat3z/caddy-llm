@@ -13,7 +13,9 @@ import (
 
 	"github.com/caddyserver/caddy/v2/caddytest"
 
-	_ "github.com/ccat3z/caddy-llm"
+	_ "github.com/ccat3z/caddy-llm/claudetoopenai"
+	_ "github.com/ccat3z/caddy-llm/llmroute"
+	_ "github.com/ccat3z/caddy-llm/trace"
 )
 
 // upstreamLog records what one mock upstream received.

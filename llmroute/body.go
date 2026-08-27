@@ -8,11 +8,11 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/ccat3z/caddy-llm/internal"
+	caddyllm "github.com/ccat3z/caddy-llm"
 )
 
 // ReadOnlyJsonBody is an immutable, lazily-parsed JSON request body. The
-// embedded internal.LazyJsonNode gives on-demand access (Get/Obj/List/With)
+// embedded caddyllm.LazyJsonNode gives on-demand access (Get/Obj/List/With)
 // with per-node lazy parsing; this wrapper adds the HTTP/io side. The raw
 // cache keeps the wire bytes stable once materialized, so the Read cursor
 // (and GetBody retries) always serve the same bytes.
@@ -20,7 +20,7 @@ import (
 // To "modify" a body, build a new one (With on the node returns a new node)
 // and install it with SetRequestBody. Bodies are never mutated in place.
 type ReadOnlyJsonBody struct {
-	internal.LazyJsonNode
+	caddyllm.LazyJsonNode // embedded; field name is LazyJsonNode
 	// raw caches the materialized wire bytes: set at construction when the
 	// body came from bytes, or produced once by Marshal. Keeps Read's
 	// cursor consistent across repeated Marshal/Read/GetBody calls.
@@ -32,7 +32,7 @@ type ReadOnlyJsonBody struct {
 // NewJsonBody wraps raw bytes: construction is free (no parsing), the first
 // accessor decides what gets parsed.
 func NewJsonBody(raw []byte) *ReadOnlyJsonBody {
-	return &ReadOnlyJsonBody{LazyJsonNode: internal.LazyJsonNode{Val: json.RawMessage(raw)}}
+	return &ReadOnlyJsonBody{LazyJsonNode: caddyllm.LazyJsonNode{Val: json.RawMessage(raw)}}
 }
 
 // Marshal returns the body's wire bytes, encoding them once from the node's
@@ -88,8 +88,8 @@ var _ io.ReadCloser = (*ReadOnlyJsonBody)(nil)
 func NewJsonBodyFromBytes(raw []byte) (*ReadOnlyJsonBody, error) {
 	b := NewJsonBody(raw)
 	// Validate: the router and translator both assume a top-level object.
-	if t := b.Type(); t != internal.TypeObject {
-		if t == internal.TypeNull {
+	if t := b.Type(); t != caddyllm.TypeObject {
+		if t == caddyllm.TypeNull {
 			return nil, io.ErrUnexpectedEOF
 		}
 		return nil, fmt.Errorf("request body is not a JSON object")

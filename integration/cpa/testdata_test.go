@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ccat3z/caddy-llm/internal"
-	"github.com/ccat3z/caddy-llm/internal/trans"
+	caddyllm "github.com/ccat3z/caddy-llm"
+	"github.com/ccat3z/caddy-llm/claudetoopenai"
 )
 
 // The testdata cases are sanitized extracts from the real CLIProxyAPI corpus
@@ -40,8 +40,8 @@ func TestTestdataRequestTranslation(t *testing.T) {
 	for _, name := range []string{"stream_text.log", "stream_tool_use.log", "stream_thinking.log", "nonstream_tool_use.log"} {
 		t.Run(name, func(t *testing.T) {
 			lg := loadCase(t, name)
-			in := &internal.LazyJsonNode{Val: json.RawMessage(lg.RequestBody)}
-			got, err := trans.TranslateRequest(in)
+			in := &caddyllm.LazyJsonNode{Val: json.RawMessage(lg.RequestBody)}
+			got, err := claudetoopenai.TranslateRequest(in)
 			if err != nil {
 				t.Fatalf("TranslateRequest: %v", err)
 			}
@@ -97,11 +97,11 @@ func TestTestdataStreamThinking(t *testing.T) {
 func TestTestdataNonStreamToolUse(t *testing.T) {
 	lg := loadCase(t, "nonstream_tool_use.log")
 	up := lastOKAPIResponse(lg)
-	var in trans.OpenAIResponse
+	var in claudetoopenai.OpenAIResponse
 	if err := json.Unmarshal(up.Body, &in); err != nil {
 		t.Fatalf("upstream body: %v", err)
 	}
-	got, err := json.Marshal(trans.TranslateResponse(&in, clientModel(lg)))
+	got, err := json.Marshal(claudetoopenai.TranslateResponse(&in, clientModel(lg)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestTestdataError(t *testing.T) {
 	}
 
 	// TranslateError must reproduce the client-facing error envelope.
-	got := trans.TranslateError(502, []byte(upstreamErr))
+	got := claudetoopenai.TranslateError(502, []byte(upstreamErr))
 	var out map[string]any
 	if err := json.Unmarshal(got, &out); err != nil {
 		t.Fatalf("error body: %v (%s)", err, got)

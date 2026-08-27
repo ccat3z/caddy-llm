@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ccat3z/caddy-llm/internal"
-	"github.com/ccat3z/caddy-llm/internal/trans"
+	caddyllm "github.com/ccat3z/caddy-llm"
+	"github.com/ccat3z/caddy-llm/claudetoopenai"
 )
 
 // logsDir is the CLIProxyAPI CLIProxyAPI regression log set, controlled by CPA_LOG_DIR
@@ -89,10 +89,10 @@ func TestCliProxyAPIRegressionRequest(t *testing.T) {
 			continue
 		}
 		t.Run(name, func(t *testing.T) {
-			in := &internal.LazyJsonNode{Val: json.RawMessage(lg.RequestBody)}
-			out, err := trans.TranslateRequest(in)
+			in := &caddyllm.LazyJsonNode{Val: json.RawMessage(lg.RequestBody)}
+			out, err := claudetoopenai.TranslateRequest(in)
 			if err != nil {
-				t.Fatalf("trans.TranslateRequest: %v", err)
+				t.Fatalf("claudetoopenai.TranslateRequest: %v", err)
 			}
 			got, err := out.Marshal()
 			if err != nil {

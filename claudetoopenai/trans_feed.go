@@ -1,4 +1,4 @@
-package trans
+package claudetoopenai
 
 import "bytes"
 

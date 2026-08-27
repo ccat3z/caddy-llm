@@ -1,18 +1,18 @@
 package cpa
 
 import (
-	"github.com/ccat3z/caddy-llm/internal/trans"
-
 	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/ccat3z/caddy-llm/claudetoopenai"
 )
 
 // TestCliProxyAPIRegressionResponse replays (upstream OpenAI response -> client
 // Claude response) pairs from non-streaming real logs through
-// trans.TranslateResponse and compares semantically.
+// claudetoopenai.TranslateResponse and compares semantically.
 func TestCliProxyAPIRegressionResponse(t *testing.T) {
 	files := regressionFiles(t)
 	if len(files) == 0 {
@@ -42,11 +42,11 @@ func TestCliProxyAPIRegressionResponse(t *testing.T) {
 		model := clientModel(lg)
 
 		t.Run(name, func(t *testing.T) {
-			var in trans.OpenAIResponse
+			var in claudetoopenai.OpenAIResponse
 			if err := json.Unmarshal(up.Body, &in); err != nil {
 				t.Skipf("unparseable upstream body: %v", err)
 			}
-			got, err := json.Marshal(trans.TranslateResponse(&in, model))
+			got, err := json.Marshal(claudetoopenai.TranslateResponse(&in, model))
 			if err != nil {
 				t.Fatalf("marshal: %v", err)
 			}
@@ -65,7 +65,7 @@ func TestCliProxyAPIRegressionResponse(t *testing.T) {
 }
 
 // TestCliProxyAPIRegressionError replays upstream error responses through
-// trans.TranslateError and compares against the client-facing error body. Errors are
+// claudetoopenai.TranslateError and compares against the client-facing error body. Errors are
 // rare in the corpus, so this scans the full log directory for error-final
 // files rather than the standard sample.
 func TestCliProxyAPIRegressionError(t *testing.T) {
@@ -105,7 +105,7 @@ func TestCliProxyAPIRegressionError(t *testing.T) {
 			continue
 		}
 		t.Run(name, func(t *testing.T) {
-			got := trans.TranslateError(up.Status, up.Body)
+			got := claudetoopenai.TranslateError(up.Status, up.Body)
 			assertJSONDiffEq(t, "translated error", lg.Response.Body, got)
 		})
 		ran++

@@ -1,4 +1,4 @@
-package internal
+package caddy_llm
 
 import (
 	"encoding/json"

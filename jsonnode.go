@@ -1,5 +1,5 @@
-// Package internal holds caddy-llm's non-exported core types.
-package internal
+// Package caddy_llm hosts the LazyJsonNode lazy-JSON value type.
+package caddy_llm
 
 import (
 	"bytes"

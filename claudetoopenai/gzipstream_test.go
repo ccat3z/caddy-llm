@@ -31,7 +31,7 @@ func TestStreamingGzipHeaderDeleted(t *testing.T) {
 }
 
 // TestStreamingGzipSplitMember locks the fix for per-Write gzip.Reader Reset:
-// one gzip member split across multiple Write calls must still trans.
+// one gzip member split across multiple Write calls must still
 func TestStreamingGzipSplitMember(t *testing.T) {
 	var payload bytes.Buffer
 	for _, chunk := range []string{
