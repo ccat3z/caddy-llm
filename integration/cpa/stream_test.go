@@ -1,14 +1,15 @@
 package cpa
 
 import (
+	"github.com/ccat3z/caddy-llm/internal/trans"
+
 	"encoding/json"
-	"github.com/ccat3z/caddy-llm/translate"
 	"strings"
 	"testing"
 )
 
 // TestCliProxyAPIRegressionStream replays (upstream OpenAI SSE -> client Claude
-// SSE) pairs from real streaming logs through translate.StreamConverter and compares the
+// SSE) pairs from real streaming logs through trans.StreamConverter and compares the
 // reconstructed Claude event streams semantically: same event sequence with
 // same logical content (concatenated text/thinking, assembled tool inputs,
 // stop_reason, usage).
@@ -61,9 +62,9 @@ func TestCliProxyAPIRegressionStream(t *testing.T) {
 }
 
 // replayUpstreamStream feeds upstream SSE bytes through a StreamFeeder.
-func replayUpstreamStream(t *testing.T, body []byte, model string) []translate.SSEEvent {
+func replayUpstreamStream(t *testing.T, body []byte, model string) []trans.SSEEvent {
 	t.Helper()
-	f := translate.NewStreamFeeder(model)
+	f := trans.NewStreamFeeder(model)
 	evts, err := f.Write(body)
 	if err != nil {
 		t.Fatalf("feed: %v", err)
@@ -78,16 +79,16 @@ func replayUpstreamStream(t *testing.T, body []byte, model string) []translate.S
 // parseClaudeSSE parses a client-facing Claude SSE body into events. Handles
 // CLIProxyAPI logging artifacts: multiple `data:` lines glued onto one line
 // without newline separators, and a doubled trailing [DONE].
-func parseClaudeSSE(body string) []translate.SSEEvent {
-	var events []translate.SSEEvent
-	var cur translate.SSEEvent
+func parseClaudeSSE(body string) []trans.SSEEvent {
+	var events []trans.SSEEvent
+	var cur trans.SSEEvent
 	flush := func(data string) {
 		if data == "[DONE]" {
 			return // terminator artifact we do not reproduce
 		}
 		cur.Data = []byte(data)
 		events = append(events, cur)
-		cur = translate.SSEEvent{}
+		cur = trans.SSEEvent{}
 	}
 	for _, line := range strings.Split(body, "\n") {
 		line = strings.TrimRight(line, "\r")
@@ -134,7 +135,7 @@ type toolShape struct {
 	input string
 }
 
-func shapeStream(t *testing.T, events []translate.SSEEvent) streamShape {
+func shapeStream(t *testing.T, events []trans.SSEEvent) streamShape {
 	t.Helper()
 	var sh streamShape
 	toolInputs := map[int]*strings.Builder{}
@@ -202,7 +203,7 @@ func shapeStream(t *testing.T, events []translate.SSEEvent) streamShape {
 	return sh
 }
 
-func compareStreams(t *testing.T, wantEvents, gotEvents []translate.SSEEvent) {
+func compareStreams(t *testing.T, wantEvents, gotEvents []trans.SSEEvent) {
 	t.Helper()
 	want := shapeStream(t, wantEvents)
 	got := shapeStream(t, gotEvents)

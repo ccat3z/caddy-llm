@@ -20,7 +20,6 @@ import (
 
 	"github.com/ccat3z/caddy-llm/internal/trans"
 	"github.com/ccat3z/caddy-llm/llmroute"
-	"github.com/ccat3z/caddy-llm/translate"
 )
 
 func init() {
@@ -98,7 +97,7 @@ func (c *Claude2OpenAI) ServeHTTP(w http.ResponseWriter, r *http.Request, next c
 // writeClaudeError writes an Anthropic-style error response without calling
 // the rest of the chain.
 func (c *Claude2OpenAI) writeClaudeError(w http.ResponseWriter, status int, errType, msg string) error {
-	body := translate.TranslateError(status, []byte(`{"error":{"type":"`+errType+`","message":`+jsonString(msg)+`}}`))
+	body := trans.TranslateError(status, []byte(`{"error":{"type":"`+errType+`","message":`+jsonString(msg)+`}}`))
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	w.WriteHeader(status)
@@ -125,7 +124,7 @@ type responseWriter struct {
 	maxBuff bool
 
 	// streaming mode
-	feeder *translate.StreamFeeder
+	feeder *trans.StreamFeeder
 	// gzGzip marks a gzip-encoded upstream stream (captured at WriteHeader,
 	// before Content-Encoding is deleted from the header map).
 	gzGzip bool
@@ -199,7 +198,7 @@ func newStreamResponseWriter(w http.ResponseWriter, model string) *responseWrite
 		w:      w,
 		model:  model,
 		stream: true,
-		feeder: translate.NewStreamFeeder(model),
+		feeder: trans.NewStreamFeeder(model),
 	}
 }
 
@@ -308,7 +307,7 @@ func (rw *responseWriter) feed(p []byte) (int, error) {
 		return 0, err
 	}
 	if len(events) > 0 {
-		if _, err := rw.w.Write(translate.EncodeAll(events)); err != nil {
+		if _, err := rw.w.Write(trans.EncodeAll(events)); err != nil {
 			return 0, err
 		}
 	}
@@ -334,7 +333,7 @@ func (rw *responseWriter) finish() {
 			}
 			events, err := rw.feeder.Close()
 			if err == nil {
-				_, _ = rw.w.Write(translate.EncodeAll(events))
+				_, _ = rw.w.Write(trans.EncodeAll(events))
 			}
 			if f, ok := rw.w.(http.Flusher); ok {
 				f.Flush()
@@ -359,15 +358,15 @@ func (rw *responseWriter) finish() {
 	}
 	var out []byte
 	if status >= 200 && status < 300 && len(body) > 0 {
-		var resp translate.OpenAIResponse
+		var resp trans.OpenAIResponse
 		if err := json.Unmarshal(body, &resp); err == nil {
-			out, _ = json.Marshal(translate.TranslateResponse(&resp, rw.model))
+			out, _ = json.Marshal(trans.TranslateResponse(&resp, rw.model))
 		} else {
 			status = http.StatusBadGateway
-			out = translate.TranslateError(status, body)
+			out = trans.TranslateError(status, body)
 		}
 	} else {
-		out = translate.TranslateError(status, body)
+		out = trans.TranslateError(status, body)
 	}
 	h := rw.w.Header()
 	h.Del("Content-Encoding") // we translated the (decompressed) body

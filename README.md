@@ -198,10 +198,11 @@ client-facing response):
 Package layout:
 
 ```
-translate/                pure translation library (no Caddy deps)
-                          struct + map-native entry points
+internal/                 LazyJsonNode: lazy JSON value (nodes)
+internal/trans/           translation (Anthropic↔OpenAI, request on nodes +
+                          response/stream)
 claudetoopenai/           claude2openai handler
-llmroute/                 llm_route handler + the in-memory JSON body type
+llmroute/                 llm_route handler + the JSON body type
 trace/                    trace handler + llm_tracer app + query API
 integration/              full-chain integration tests (JSON configs)
 integration/cpa/          CLIProxyAPI regression tests, sanitized cases,

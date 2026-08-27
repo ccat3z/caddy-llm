@@ -2,7 +2,7 @@
 // the Anthropic Messages API wire format (the response/stream direction).
 // Request translation lives in internal/trans. This is a pure library with
 // no Caddy dependencies.
-package translate
+package trans
 
 import "encoding/json"
 
