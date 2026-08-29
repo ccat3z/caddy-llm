@@ -1,4 +1,4 @@
-package cpa
+package cpa_test
 
 import (
 	"encoding/json"

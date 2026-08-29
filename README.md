@@ -183,13 +183,13 @@ Two layers of translation tests, both driven by CLIProxyAPI request logs
 (original Claude request → forwarded OpenAI request, upstream response →
 client-facing response):
 
-1. **CLIProxyAPI regression tests** (`integration/cpa`) replay the real log
+1. **CLIProxyAPI regression tests** (`claudetoopenai/cpa_test`) replay the real log
    directory — every recorded exchange becomes a regression case for the
    node-domain translator — from `CPA_LOG_DIR` (default:
    `../CLIproxyAPI/data/logs`); tests skip when absent. Controls:
    - `CPA_REGRESSION_SAMPLE=N` — number of files to test (default 300)
    - `CPA_REGRESSION_ALL=1` — every file (~20k verified pairs, ~1 min)
-2. **Committed sanitized cases** (`integration/cpa/testdata`) run
+2. **Committed sanitized cases** (`claudetoopenai/cpa_test/testdata`) run
    everywhere without the log directory: five representative exchanges (text
    stream, tool-call stream, thinking stream, non-streaming tool response,
    mid-stream error) extracted from real logs with credentials, cookies,
@@ -204,9 +204,10 @@ claudetoopenai/           claude2openai handler + the Anthropic↔OpenAI
                           translation (request on nodes + response/stream)
 llmroute/                 llm_route handler (model routing + fallthrough)
 trace/                    trace handler + llm_tracer app + query API
+claudetoopenai/cpa_test/  CLIProxyAPI regression tests over the pure
+                          translation functions, sanitized cases, and the
+                          log-format parser
 integration/              full-chain integration tests (JSON configs)
-integration/cpa/          CLIProxyAPI regression tests, sanitized cases,
-                          and the log-format parser (logparse.go)
 examples/                 validated JSON config examples
 cmd/caddy-llm/            custom binary entry
 all.go                    side-effect import of every module

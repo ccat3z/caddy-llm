@@ -1,4 +1,4 @@
-// Package logparse parses CLIProxyAPI request-log files (the === SECTION ===
+// logparse parses CLIProxyAPI request-log files (the === SECTION ===
 // plain-text format) into structured form, for use as test fixtures.
 //
 // A log file records one client request round trip:
@@ -9,7 +9,7 @@
 //	=== API REQUEST N ===  attempt N forwarded upstream (URL, auth, headers, body)
 //	=== API RESPONSE N === the upstream response for attempt N (raw SSE or JSON)
 //	=== RESPONSE ===       what the proxy returned to the client
-package cpa
+package cpa_test
 
 import (
 	"bufio"
