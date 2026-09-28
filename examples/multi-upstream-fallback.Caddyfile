@@ -1,0 +1,51 @@
+# Multi-upstream fallback — equivalent to multi-upstream-fallback.json:
+# two llm_route blocks (Claude-native upstream first, OpenAI upstream with
+# translation as fallback) plus the tracer app.
+#
+#	caddy-llm run --config examples/multi-upstream-fallback.Caddyfile
+
+{
+	admin localhost:2019
+	http_port 8080
+
+	llm_tracer /var/lib/caddy/llm-traces
+}
+
+http://:8080 {
+	# route keeps the llm_route blocks in priority order (handler order is
+	# the fallback order).
+	route /v1/messages {
+		# Upstream 1 (priority): Claude-native passthrough.
+		llm_route {
+			model glm-5.2
+
+			# The subchain is wrapped in a route block so its handlers stay
+			# in written order (trace must sit after the rewrite).
+			route {
+				rewrite * /v1/messages
+				trace claude
+				reverse_proxy native.example.com:443
+			}
+		}
+
+		# Upstream 2 (fallback): OpenAI-compatible with translation. The
+		# pattern rewrites a "glm/..." provider prefix off the model name.
+		llm_route {
+			model glm/(.*) $1
+			model glm-5.2
+
+			route {
+				rewrite * /api/coding/paas/v4/chat/completions
+				claude2openai
+				trace glm
+				reverse_proxy open.bigmodel.cn:443
+			}
+		}
+	}
+
+	# Traces query API: GET /llm/traces[?...]
+	handle /llm/traces* {
+		uri strip_prefix /llm/traces
+		llm_tracer_api
+	}
+}

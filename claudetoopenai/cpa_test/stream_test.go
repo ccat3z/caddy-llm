@@ -24,11 +24,16 @@ func TestCliProxyAPIRegressionStream(t *testing.T) {
 		if err != nil {
 			continue
 		}
-		if !lg.IsChatCompletions() {
+		up := lastOKAPIResponse(lg)
+		if up == nil {
 			continue
 		}
-		up := lastOKAPIResponse(lg)
-		if up == nil || !strings.Contains(string(up.Body), "chat.completion.chunk") {
+		// The client stream answers the final successful attempt; that
+		// attempt (matched by N) must be the translated one.
+		if req := lg.RequestFor(up); req == nil || !req.IsChatCompletions() {
+			continue
+		}
+		if !strings.Contains(string(up.Body), "chat.completion.chunk") {
 			continue
 		}
 		down := string(lg.Response.Body)

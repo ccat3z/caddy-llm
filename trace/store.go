@@ -17,6 +17,9 @@ import (
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
+	"github.com/caddyserver/caddy/v2/caddyconfig"
+	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
+	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"go.uber.org/zap"
 	_ "modernc.org/sqlite"
@@ -24,7 +27,10 @@ import (
 
 func init() {
 	caddy.RegisterModule(Store{})
+	httpcaddyfile.RegisterGlobalOption("llm_tracer", parseGlobalOption)
 	caddy.RegisterModule(TraceAPI{})
+	httpcaddyfile.RegisterHandlerDirective("llm_tracer_api", parseTraceAPICaddyfile)
+	httpcaddyfile.RegisterDirectiveOrder("llm_tracer_api", httpcaddyfile.Before, "respond")
 }
 
 // Store is the tracer app: a caddy.App persisting raw, replayable HTTP
@@ -498,4 +504,40 @@ func intQuery(r *http.Request, name string, def int) int {
 		return def
 	}
 	return n
+}
+
+// ---------- Caddyfile ----------
+
+func parseGlobalOption(d *caddyfile.Dispenser, _ any) (any, error) {
+	app := new(Store)
+	for d.Next() {
+		if d.NextArg() {
+			app.Dir = d.Val()
+		}
+		for d.NextBlock(0) {
+			switch d.Val() {
+			case "dir":
+				if !d.NextArg() {
+					return nil, d.ArgErr()
+				}
+				app.Dir = d.Val()
+			default:
+				return nil, d.Errf("unknown subdirective %q", d.Val())
+			}
+		}
+	}
+	return httpcaddyfile.App{
+		Name:  "llm_tracer",
+		Value: caddyconfig.JSON(app, nil),
+	}, nil
+}
+
+func parseTraceAPICaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error) {
+	var t TraceAPI
+	for h.Next() {
+		if h.NextArg() {
+			return nil, h.ArgErr()
+		}
+	}
+	return &t, nil
 }

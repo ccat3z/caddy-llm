@@ -1,0 +1,20 @@
+# Minimal translation chain: one route, rewrite -> claude2openai ->
+# reverse_proxy. Equivalent to claude2openai.json.
+#
+#	caddy-llm run --config examples/claude2openai.Caddyfile
+
+{
+	admin localhost:2019
+	http_port 8080
+}
+
+http://:8080 {
+	# route keeps the chain in written order. claude2openai only translates
+	# bodies; path routing and upstream-path rewriting belong to the matcher
+	# and the rewrite handler.
+	route /v1/messages {
+		rewrite * /v1/chat/completions
+		claude2openai
+		reverse_proxy open.bigmodel.cn:443
+	}
+}

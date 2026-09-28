@@ -6,8 +6,8 @@ Anthropic Messages API (`/v1/messages`) to OpenAI chat-completions upstreams,
 with request tracing, using only stock Caddy mechanics (`reverse_proxy` does
 the actual forwarding).
 
-**JSON configuration only** — no Caddyfile directives are registered. Run
-with `caddy-llm run --config caddy.json`; see `examples/`.
+Configure via JSON (`caddy-llm run --config caddy.json`) or Caddyfile
+(`caddy-llm run --config Caddyfile`); see `examples/`.
 
 ## Modules
 
@@ -31,9 +31,23 @@ Runnable configurations in [`examples/`](examples/), all validated:
   two `llm_route` blocks (Claude-native upstream first, OpenAI upstream with
   translation as fallback) plus the tracer app.
 
+Each has a Caddyfile twin (`.Caddyfile`):
+
+- [`claude2openai.Caddyfile`](examples/claude2openai.Caddyfile)
+- [`traced-translation.Caddyfile`](examples/traced-translation.Caddyfile)
+- [`multi-upstream-fallback.Caddyfile`](examples/multi-upstream-fallback.Caddyfile)
+
 ```
 caddy-llm run --config examples/traced-translation.json
+caddy-llm run --config examples/traced-translation.Caddyfile
 ```
+
+Caddyfile directives: `claude2openai`, `trace <stage>`, `llm_tracer_api`,
+the `llm_tracer <dir>` global option, and `llm_route` (with `model`
+subdirectives; the subchain is everything else in the block). Handler chains
+written in a `route` block keep their written order — use one whenever
+position matters (e.g. `trace` after `claude2openai`); elsewhere directives
+are sorted by the standard directive order.
 
 Point any Anthropic client (Claude Code, Anthropic SDK) at the server.
 Requests to `POST /v1/messages` are translated and forwarded; sub-resources
@@ -249,4 +263,4 @@ Known hot-path costs and their status (correctness-safe, all optional):
 - `count_tokens` is passed through, not answered locally.
 - No credential rotation — set the upstream `Authorization` header yourself
   (e.g. on `reverse_proxy`'s `headers.request.set`).
-- JSON config only; no Caddyfile directives.
+- JSON and Caddyfile configuration; no other config formats.

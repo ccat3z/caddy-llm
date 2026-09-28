@@ -17,12 +17,17 @@ import (
 	"regexp"
 
 	"github.com/caddyserver/caddy/v2"
+	"github.com/caddyserver/caddy/v2/caddyconfig"
+	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
+	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"go.uber.org/zap"
 )
 
 func init() {
 	caddy.RegisterModule(Route{})
+	httpcaddyfile.RegisterHandlerDirective("llm_route", parseCaddyfile)
+	httpcaddyfile.RegisterDirectiveOrder("llm_route", httpcaddyfile.Before, "reverse_proxy")
 }
 
 // fallthroughStatuses are the upstream response codes that trigger
@@ -349,3 +354,81 @@ func (pw *peekWriter) Flush() {
 }
 
 var _ http.Flusher = (*peekWriter)(nil)
+
+// ---------- Caddyfile ----------
+
+func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error) {
+	var r Route
+	for h.Next() {
+		if h.NextArg() {
+			return nil, h.ArgErr()
+		}
+
+		// First pass: slice the block into segments; collect model rules and
+		// keep the remaining segments for the subchain.
+		var subSegments []caddyfile.Segment
+		for nesting := h.Nesting(); h.NextBlock(nesting); {
+			seg := h.NextSegment()
+			if len(seg) == 0 {
+				continue
+			}
+			switch string(seg[0].Text) {
+			case "model":
+				d := caddyfile.NewDispenser(seg)
+				d.Next() // consume "model"
+				args := d.RemainingArgs()
+				switch len(args) {
+				case 1:
+					r.Models = append(r.Models, ModelRule{Pattern: args[0]})
+				case 2:
+					r.Models = append(r.Models, ModelRule{Pattern: args[0], Replace: args[1]})
+				default:
+					return nil, h.Errf("model takes 1 arg (exact name) or 2 (pattern replacement)")
+				}
+			default:
+				subSegments = append(subSegments, seg)
+			}
+		}
+		if len(r.Models) == 0 {
+			return nil, h.Errf("llm_route requires at least one model rule")
+		}
+		if len(subSegments) == 0 {
+			return nil, h.Errf("llm_route requires a subchain (e.g. reverse_proxy)")
+		}
+
+		// Second pass: parse the remaining segments as a subroute (standard
+		// directive dispatch: matchers, handler ordering, nesting all work),
+		// then store it as the SubRaw module JSON.
+		sub, err := parseSegmentsAsSubroute(h, subSegments)
+		if err != nil {
+			return nil, err
+		}
+		r.SubRaw = caddyconfig.JSONModuleObject(sub, "handler", "subroute", nil)
+	}
+	return &r, nil
+}
+
+// parseSegmentsAsSubroute builds a subroute from raw segments by replaying
+// them through the standard Caddyfile machinery: the segments are wrapped in
+// a synthetic `route { ... }` block, then dispatched to ParseSegmentAsSubroute
+// (matchers, handler ordering, nesting all work as if written in a route).
+func parseSegmentsAsSubroute(h httpcaddyfile.Helper, segments []caddyfile.Segment) (*caddyhttp.Subroute, error) {
+	open := caddyfile.Token{File: h.File(), Line: h.Line(), Text: "{"}
+	close := caddyfile.Token{File: h.File(), Line: h.Line(), Text: "}"}
+	tokens := make([]caddyfile.Token, 0, len(segments)+2)
+	tokens = append(tokens, caddyfile.Token{File: h.File(), Line: h.Line(), Text: "route"}, open)
+	for _, seg := range segments {
+		tokens = append(tokens, seg...)
+	}
+	tokens = append(tokens, close)
+	h2 := h.WithDispenser(caddyfile.NewDispenser(tokens))
+	mh, err := httpcaddyfile.ParseSegmentAsSubroute(h2)
+	if err != nil {
+		return nil, err
+	}
+	sub, ok := mh.(*caddyhttp.Subroute)
+	if !ok {
+		return nil, h.Errf("internal: expected Subroute, got %T", mh)
+	}
+	return sub, nil
+}

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
+	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"go.uber.org/zap"
 
@@ -20,6 +21,10 @@ import (
 
 func init() {
 	caddy.RegisterModule(Tracer{})
+	httpcaddyfile.RegisterHandlerDirective("trace", parseCaddyfile)
+	// Let the directive be used outside route blocks (handle, site level);
+	// tracing wraps the rest of the exchange, so run it as early as possible.
+	httpcaddyfile.RegisterDirectiveOrder("trace", httpcaddyfile.Before, "rewrite")
 }
 
 // traceIDVar carries the trace id between the tracer stages of one client
@@ -229,4 +234,17 @@ func newTraceID() string {
 		return strconv.FormatInt(time.Now().UnixNano(), 36)
 	}
 	return hex.EncodeToString(b)
+}
+
+// ---------- Caddyfile ----------
+
+func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error) {
+	var t Tracer
+	for h.Next() {
+		if !h.NextArg() {
+			return nil, h.ArgErr()
+		}
+		t.Stage = h.Val()
+	}
+	return &t, nil
 }

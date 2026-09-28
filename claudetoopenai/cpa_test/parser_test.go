@@ -57,13 +57,33 @@ type Response struct {
 	Body    []byte
 }
 
-// IsChatCompletions reports whether the first upstream attempt targeted an
+// IsChatCompletions reports whether any upstream attempt targeted an
 // OpenAI chat-completions endpoint (as opposed to e.g. Claude passthrough).
 func (l *Log) IsChatCompletions() bool {
-	if len(l.APIRequests) == 0 {
-		return false
+	for i := range l.APIRequests {
+		if l.APIRequests[i].IsChatCompletions() {
+			return true
+		}
 	}
-	return strings.Contains(l.APIRequests[0].UpstreamURL, "chat/completions")
+	return false
+}
+
+// IsChatCompletions reports whether this attempt targeted an OpenAI
+// chat-completions endpoint. The translated attempt can appear anywhere in
+// the chain — attempt 1, or a fallback after an earlier attempt failed.
+func (r *APIRequest) IsChatCompletions() bool {
+	return strings.Contains(r.UpstreamURL, "chat/completions")
+}
+
+// RequestFor returns the upstream request attempt that resp answered
+// (matched by attempt number), or nil.
+func (l *Log) RequestFor(resp *APIResponse) *APIRequest {
+	for i := range l.APIRequests {
+		if l.APIRequests[i].N == resp.N {
+			return &l.APIRequests[i]
+		}
+	}
+	return nil
 }
 
 // Parse reads a request-log file.

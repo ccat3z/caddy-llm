@@ -1,0 +1,36 @@
+# The traced translation chain — equivalent to traced-translation.json:
+# trace on both sides of the translation, the tracer app, and the traces
+# query API.
+#
+#	caddy-llm run --config examples/traced-translation.Caddyfile
+
+{
+	admin localhost:2019
+	http_port 8080
+
+	# Trace persistence: raw replayable HTTP messages in rolling
+	# history-*.raw files plus a SQLite index.
+	llm_tracer /var/lib/caddy/llm-traces
+}
+
+http://:8080 {
+	# route keeps the chain in written order — trace stages must stay on
+	# their sides of the translation.
+	@messages {
+		method POST
+		path /v1/messages
+	}
+	route @messages {
+		trace claude
+		rewrite * /v1/chat/completions
+		claude2openai
+		trace openai
+		reverse_proxy open.bigmodel.cn:443
+	}
+
+	# Traces query API: GET /llm/traces[?...]
+	handle /llm/traces* {
+		uri strip_prefix /llm/traces
+		llm_tracer_api
+	}
+}

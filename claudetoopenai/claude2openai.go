@@ -15,6 +15,7 @@ import (
 	"sync"
 
 	"github.com/caddyserver/caddy/v2"
+	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"go.uber.org/zap"
 
@@ -23,6 +24,9 @@ import (
 
 func init() {
 	caddy.RegisterModule(Claude2OpenAI{})
+	httpcaddyfile.RegisterHandlerDirective("claude2openai", parseCaddyfile)
+	// Let the directive be used outside route blocks (handle, site level).
+	httpcaddyfile.RegisterDirectiveOrder("claude2openai", httpcaddyfile.Before, "reverse_proxy")
 }
 
 // Claude2OpenAI translates Anthropic /v1/messages requests to OpenAI
@@ -384,3 +388,18 @@ func (rw *responseWriter) Flush() {
 }
 
 var _ http.Flusher = (*responseWriter)(nil)
+
+// ---------- Caddyfile ----------
+
+func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error) {
+	var c Claude2OpenAI
+	for h.Next() {
+		// No arguments or blocks: a positional "/" token would be claimed by
+		// the Caddyfile adapter as a path matcher, and path rewriting belongs
+		// to the rewrite handler anyway.
+		if h.NextArg() {
+			return nil, h.ArgErr()
+		}
+	}
+	return &c, nil
+}

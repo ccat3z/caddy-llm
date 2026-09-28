@@ -24,12 +24,20 @@ func TestCliProxyAPIRegressionResponse(t *testing.T) {
 		if err != nil {
 			continue
 		}
-		if !lg.IsChatCompletions() || len(lg.APIResponses) == 0 || len(lg.Response.Body) == 0 {
+		if len(lg.APIResponses) == 0 || len(lg.Response.Body) == 0 {
+			continue
+		}
+		// The client response answers the final successful attempt; that
+		// attempt (matched by N) must be the translated one.
+		up := lastOKAPIResponse(lg)
+		if up == nil {
+			continue
+		}
+		if req := lg.RequestFor(up); req == nil || !req.IsChatCompletions() {
 			continue
 		}
 		// Non-streaming only here: upstream JSON chat.completion, client JSON message.
-		up := lastOKAPIResponse(lg)
-		if up == nil || !json.Valid(up.Body) {
+		if !json.Valid(up.Body) {
 			continue
 		}
 		var obj map[string]any
@@ -90,7 +98,7 @@ func TestCliProxyAPIRegressionError(t *testing.T) {
 		if err != nil {
 			continue
 		}
-		if !lg.IsChatCompletions() || len(lg.APIResponses) == 0 {
+		if len(lg.APIResponses) == 0 {
 			continue
 		}
 		// Only compare when the FINAL attempt errored: with retry chains the
@@ -102,6 +110,10 @@ func TestCliProxyAPIRegressionError(t *testing.T) {
 		}
 		up := lastAPIResponse(lg)
 		if up == nil || up.Status < 400 || lg.Response.Status < 400 {
+			continue
+		}
+		// The erroring attempt (matched by N) must be the translated one.
+		if req := lg.RequestFor(up); req == nil || !req.IsChatCompletions() {
 			continue
 		}
 		t.Run(name, func(t *testing.T) {

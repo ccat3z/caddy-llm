@@ -2,6 +2,7 @@ package cpa_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -82,35 +83,41 @@ func TestCliProxyAPIRegressionRequest(t *testing.T) {
 	ran := 0
 	for _, name := range files {
 		lg, err := parseLogFile(name)
-		if err != nil {
+		if err != nil || len(lg.RequestBody) == 0 {
 			continue
 		}
-		if !lg.IsChatCompletions() || len(lg.APIRequests) == 0 || len(lg.RequestBody) == 0 {
-			continue
+		// Every chat-completions attempt is a golden: each one translated the
+		// same client request (a fallback re-translates the pristine original),
+		// wherever it sits in the attempt chain.
+		for i := range lg.APIRequests {
+			attempt := &lg.APIRequests[i]
+			if !attempt.IsChatCompletions() {
+				continue
+			}
+			t.Run(fmt.Sprintf("%s#attempt%d", name, attempt.N), func(t *testing.T) {
+				in := &caddyllm.LazyJsonNode{Val: json.RawMessage(lg.RequestBody)}
+				out, err := claudetoopenai.TranslateRequest(in)
+				if err != nil {
+					t.Fatalf("claudetoopenai.TranslateRequest: %v", err)
+				}
+				got, err := out.Marshal()
+				if err != nil {
+					t.Fatalf("marshal: %v", err)
+				}
+				// CLIProxyAPI's deployment config applied payload overrides (e.g.
+				// max_tokens: 128000 for glm-5.1) after translation. Our translator
+				// passes the client's value through, so normalize the golden's
+				// max_tokens back to the client's before comparing.
+				golden := normalizeGoldenOverrides(attempt.Body, lg.RequestBody)
+				assertJSONDiffEq(t, "translated request", golden, got)
+			})
+			ran++
 		}
-		t.Run(name, func(t *testing.T) {
-			in := &caddyllm.LazyJsonNode{Val: json.RawMessage(lg.RequestBody)}
-			out, err := claudetoopenai.TranslateRequest(in)
-			if err != nil {
-				t.Fatalf("claudetoopenai.TranslateRequest: %v", err)
-			}
-			got, err := out.Marshal()
-			if err != nil {
-				t.Fatalf("marshal: %v", err)
-			}
-			// CLIProxyAPI's deployment config applied payload overrides (e.g.
-			// max_tokens: 128000 for glm-5.1) after translation. Our translator
-			// passes the client's value through, so normalize the golden's
-			// max_tokens back to the client's before comparing.
-			golden := normalizeGoldenOverrides(lg.APIRequests[0].Body, lg.RequestBody)
-			assertJSONDiffEq(t, "translated request", golden, got)
-		})
-		ran++
 	}
 	if ran == 0 {
 		t.Skip("no chat-completions pairs found in sample")
 	}
-	t.Logf("verified %d/%d files", ran, len(files))
+	t.Logf("verified %d chat-completions attempts in %d sampled files", ran, len(files))
 }
 
 // jsonDeepEq compares decoded JSON values, treating nil vs empty-slice and
