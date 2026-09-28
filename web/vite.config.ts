@@ -5,6 +5,9 @@ import { defineConfig } from 'vite'
 
 // https://vite.dev/config/
 export default defineConfig({
+  // Relative asset URLs so the embedded UI works under any mount prefix
+  // (llm_tracer_api serves it at {api-prefix}/ui/).
+  base: './',
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {

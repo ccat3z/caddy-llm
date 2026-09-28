@@ -597,6 +597,12 @@ func (t *TraceAPI) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyh
 		return json.NewEncoder(w).Encode(buckets)
 	}
 
+	// The embedded dashboard: /ui and /ui/*.
+	if rest == "ui" || strings.HasPrefix(rest, uiPrefix) {
+		t.serveUI(w, r, rest)
+		return nil
+	}
+
 	parts := strings.SplitN(rest, "/", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		w.WriteHeader(http.StatusNotFound)

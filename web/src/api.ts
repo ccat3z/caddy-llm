@@ -28,7 +28,13 @@ export interface UsageBucket {
   requests: number
 }
 
-const BASE = '/llm/traces'
+// The UI is served by llm_tracer_api at {api-prefix}/ui/; derive the API
+// base from the page path so any mount prefix works. In the vite dev
+// server (page at /) fall back to the proxied /llm/traces.
+const BASE = (() => {
+  const m = window.location.pathname.match(/^(.*)\/ui\/?$/)
+  return m && m[1] ? m[1] : '/llm/traces'
+})()
 
 export async function fetchTraces(stage: string, limit = 100): Promise<RequestSummary[]> {
   const q = new URLSearchParams({ limit: String(limit) })

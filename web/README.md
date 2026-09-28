@@ -24,31 +24,21 @@ Point the proxy at wherever caddy-llm serves the traces API
 npm run build        # outputs dist/
 ```
 
-Serve `dist/` from the same caddy-llm instance as the API so the UI and
-`/llm/traces` share an origin. `handle` blocks are mutually exclusive and
-sorted by matcher specificity, so list API routes before the static
-catch-all:
+`web/dist` is **embedded into the Go binary** (`web/embed.go`) and served by
+the `llm_tracer_api` handler at `{mount}/ui/` — e.g. with the API mounted at
+`/llm/traces`, the dashboard is at `/llm/traces/ui/`. Build the UI before
+`go build`; a fresh clone (dist has only a `.gitkeep` placeholder) builds
+fine and serves a "not built" hint page at the UI route instead.
+
+No static file server is needed:
 
 ```caddyfile
 handle /llm/traces* {
 	uri strip_prefix /llm/traces
 	llm_tracer_api
 }
-
-handle /v1/* {
-	route {
-		trace mcli
-		reverse_proxy https://upstream.example.com
-	}
-}
-
-handle {
-	root * /path/to/web/dist
-	try_files {path} /index.html
-	file_server
-}
 ```
 
-Note: a catch-all `handle { file_server }` placed before `route` blocks will
-shadow them (directive order puts `handle` ahead of `route`) — always give
-the API routes explicit matchers.
+(If you ever serve SPA files with `file_server` instead, give every API
+route an explicit matcher: a catch-all `handle { file_server }` sorts
+before `route` blocks and shadows them.)
