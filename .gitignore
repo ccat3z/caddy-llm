@@ -1,2 +1,3 @@
 /llm-traces/
 *.jsonl
+/caddy-llm

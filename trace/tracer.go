@@ -153,14 +153,13 @@ func (t *Tracer) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 	rw := &teeResponseWriter{ResponseWriter: w, tracer: t, traceID: traceID, name: t.TraceName, storage: s}
 	err := next.ServeHTTP(rw, r)
 
-	status := rw.status
-	if status == 0 {
-		status = http.StatusOK
-	}
+	// rw.status stays 0 when nothing was ever written (aborted exchange —
+	// e.g. the client disconnected while the upstream was still thinking).
+	// Record it as 0 rather than inventing a 200 the client never saw.
 	if s != nil {
 		usage := extractUsage(rw.tail.buf).normalize(t.CacheInInput)
 		if rerr := s.RecordRequest(r.Context(), traceID, t.TraceName, start.UTC(),
-			int(time.Since(start).Milliseconds()), status, reqBytes, rw.written, usage); rerr != nil {
+			int(time.Since(start).Milliseconds()), rw.status, reqBytes, rw.written, usage); rerr != nil {
 			t.logger.Error("record request", zap.Error(rerr), zap.String("id", traceID))
 		}
 	}
