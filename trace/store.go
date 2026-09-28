@@ -86,8 +86,8 @@ var (
 // handler and the traces API).
 func (a *Store) Storage() storage { return a.db }
 
-// RequestSummary is the list-view projection of one completed traced
-// exchange (one row of llm_requests).
+// RequestSummary is the list-view projection of one traced exchange (one
+// row of llm_requests).
 type RequestSummary struct {
 	TraceID    string    `json:"trace_id"`
 	TraceName  string    `json:"trace_name"`
@@ -96,6 +96,11 @@ type RequestSummary struct {
 	Status     int       `json:"status,omitempty"`
 	ReqBytes   int       `json:"req_bytes"`
 	RespBytes  int       `json:"resp_bytes"`
+	// State distinguishes in-flight and crashed rows from completed ones:
+	// "in_progress" (started, not yet finished) or "crashed" (was in
+	// progress when the process died, marked at store open). Empty means
+	// the exchange completed normally (possibly with an abort status).
+	State string `json:"state,omitempty"`
 	// Token accounting, normalized so the three are independent (input
 	// never includes cache). HasUsage is false for exchanges whose
 	// response carried no usage (errors, probes, truncated streams).
@@ -140,8 +145,14 @@ type storage interface {
 	// Save opens a raw_log_idx row, later ones only grow its size.
 	Save(ctx context.Context, traceID, name string, isReq bool, p []byte) error
 
-	// RecordRequest writes the aggregate row for a completed exchange.
-	// usage is nil when the response carried no token accounting.
+	// StartRequest inserts the aggregate row for a just-started exchange
+	// (state in_progress), so in-flight requests are queryable and a crash
+	// leaves a visible row instead of nothing.
+	StartRequest(ctx context.Context, traceID, name string, ts time.Time) error
+
+	// RecordRequest finalizes the row for a completed exchange (state
+	// completed). usage is nil when the response carried no token
+	// accounting. Falls back to an insert when StartRequest never ran.
 	RecordRequest(ctx context.Context, traceID, name string, ts time.Time, durMS, status, reqBytes, respBytes int, usage *Usage) error
 
 	List(ctx context.Context, q Query) ([]RequestSummary, error)
@@ -213,6 +224,9 @@ func (s *rawStore) open() error {
 	if err := s.createTables(); err != nil {
 		return err
 	}
+	if err := s.markStaleCrashed(); err != nil {
+		return err
+	}
 	return s.rotate() // open the first active file
 }
 
@@ -240,7 +254,8 @@ CREATE TABLE IF NOT EXISTS llm_requests (
     resp_bytes  INTEGER,
     in_tokens   INTEGER,
     cache_tokens INTEGER,
-    out_tokens  INTEGER
+    out_tokens  INTEGER,
+    done        INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_requests_name ON llm_requests(trace_name);`
 	if _, err := s.db.Exec(schema); err != nil {
@@ -248,12 +263,29 @@ CREATE INDEX IF NOT EXISTS idx_requests_name ON llm_requests(trace_name);`
 	}
 	// Migrate pre-token-stats databases: add the columns if missing.
 	// (Exchanges recorded before this have NULL usage — no usage detected.)
-	for _, col := range []string{"in_tokens", "cache_tokens", "out_tokens"} {
+	for _, col := range []string{"in_tokens", "cache_tokens", "out_tokens", "done"} {
 		if _, err := s.db.Exec(`ALTER TABLE llm_requests ADD COLUMN ` + col + ` INTEGER`); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return err
 		}
 	}
 	return nil
+}
+
+// done states for llm_requests.done.
+const (
+	doneInProgress = 0
+	doneCompleted  = 1
+	doneCrashed    = 2
+)
+
+// markStaleCrashed flips every in-progress row to crashed. The store is
+// single-writer per process, so any in-progress row at open time belongs
+// to a process that died mid-exchange.
+func (s *rawStore) markStaleCrashed() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`UPDATE llm_requests SET done=? WHERE done=?`, doneCrashed, doneInProgress)
+	return err
 }
 
 func (s *rawStore) close() error {
@@ -322,6 +354,16 @@ func boolInt(b bool) int {
 	return 0
 }
 
+// StartRequest implements storage.
+func (s *rawStore) StartRequest(_ context.Context, traceID, name string, ts time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(
+		`INSERT INTO llm_requests (trace_id, trace_name, ts, done) VALUES (?,?,?,?)`,
+		traceID, name, ts.UTC(), doneInProgress)
+	return err
+}
+
 // RecordRequest implements storage.
 func (s *rawStore) RecordRequest(_ context.Context, traceID, name string, ts time.Time, durMS, status, reqBytes, respBytes int, usage *Usage) error {
 	s.mu.Lock()
@@ -330,24 +372,49 @@ func (s *rawStore) RecordRequest(_ context.Context, traceID, name string, ts tim
 	if usage != nil {
 		in, cache, out = usage.Input, usage.Cache, usage.Output
 	}
-	_, err := s.db.Exec(
-		`INSERT INTO llm_requests (trace_id, trace_name, ts, dur_ms, status, req_bytes, resp_bytes, in_tokens, cache_tokens, out_tokens) VALUES (?,?,?,?,?,?,?,?,?,?)`,
-		traceID, name, ts.UTC(), durMS, status, reqBytes, respBytes, in, cache, out)
+	res, err := s.db.Exec(
+		`UPDATE llm_requests SET dur_ms=?, status=?, req_bytes=?, resp_bytes=?, in_tokens=?, cache_tokens=?, out_tokens=?, done=?
+		 WHERE trace_id=? AND trace_name=? AND done=?`,
+		durMS, status, reqBytes, respBytes, in, cache, out, doneCompleted,
+		traceID, name, doneInProgress)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		return nil
+	}
+	// StartRequest never ran (e.g. storage was broken at request start):
+	// fall back to a direct insert of the completed row.
+	_, err = s.db.Exec(
+		`INSERT INTO llm_requests (trace_id, trace_name, ts, dur_ms, status, req_bytes, resp_bytes, in_tokens, cache_tokens, out_tokens, done) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		traceID, name, ts.UTC(), durMS, status, reqBytes, respBytes, in, cache, out, doneCompleted)
 	return err
 }
 
 // summaryColumns is the SELECT projection shared by List and Get.
-const summaryColumns = `trace_id, trace_name, ts, dur_ms, status, req_bytes, resp_bytes, in_tokens, cache_tokens, out_tokens`
+const summaryColumns = `trace_id, trace_name, ts, dur_ms, status, req_bytes, resp_bytes, in_tokens, cache_tokens, out_tokens, done`
 
 // scanSummary scans one llm_requests row (summaryColumns order) into a
-// RequestSummary. NULL token columns mean no usage was detected.
+// RequestSummary. Completion columns are NULL while in progress; NULL
+// token columns mean no usage was detected; NULL done
+// (pre-in-progress-tracking rows) means completed.
 func scanSummary(row interface{ Scan(...any) error }, r *RequestSummary) error {
-	var in, cache, out sql.NullInt64
-	if err := row.Scan(&r.TraceID, &r.TraceName, &r.Timestamp, &r.DurationMS, &r.Status, &r.ReqBytes, &r.RespBytes, &in, &cache, &out); err != nil {
+	var dur, status, reqB, respB, in, cache, out, done sql.NullInt64
+	if err := row.Scan(&r.TraceID, &r.TraceName, &r.Timestamp, &dur, &status, &reqB, &respB, &in, &cache, &out, &done); err != nil {
 		return err
 	}
+	r.DurationMS = dur.Int64
+	r.Status = int(status.Int64)
+	r.ReqBytes = int(reqB.Int64)
+	r.RespBytes = int(respB.Int64)
 	r.HasUsage = in.Valid || cache.Valid || out.Valid
 	r.InputTokens, r.CacheTokens, r.OutputTokens = int(in.Int64), int(cache.Int64), int(out.Int64)
+	switch {
+	case done.Valid && done.Int64 == doneInProgress:
+		r.State = "in_progress"
+	case done.Valid && done.Int64 == doneCrashed:
+		r.State = "crashed"
+	}
 	return nil
 }
 

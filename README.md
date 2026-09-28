@@ -155,8 +155,13 @@ to disk as it arrives, so a crash mid-stream keeps what already came in.
 
 Positioning and aggregate metadata live in `index.db` (SQLite, WAL):
 `raw_log_idx` locates every message segment, `llm_requests` holds the
-per-request summary (trace id, name, duration, status, byte counts). Note
-the raw files contain the original credentials — protect the trace
+per-request summary (trace id, name, duration, status, byte counts). The
+summary row is **written ahead**: inserted when the request starts
+(`in_progress`) and updated when the chain finishes — in-flight requests
+are queryable, and rows still in progress when the store next opens (the
+process died mid-exchange) are marked `crashed`. Mid-stream aborts are
+recorded even though reverse_proxy unwinds with `http.ErrAbortHandler`.
+Note the raw files contain the original credentials — protect the trace
 directory accordingly.
 
 ### Trace API

@@ -99,6 +99,16 @@ func (t *Tracer) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 
 	s := t.storage()
 
+	// Write-ahead: the row exists from the start, so in-flight requests are
+	// queryable and a crash mid-exchange leaves a visible (later
+	// crashed-marked) row instead of nothing.
+	if s != nil {
+		if err := s.StartRequest(r.Context(), traceID, t.TraceName, start.UTC()); err != nil {
+			t.logger.Error("start request", zap.Error(err), zap.String("id", traceID))
+			s = nil
+		}
+	}
+
 	// Record the full inbound request as a replayable HTTP/1.1 message:
 	// request-line + headers + blank line, then the raw body.
 	reqBytes := 0

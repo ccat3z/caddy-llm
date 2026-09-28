@@ -357,8 +357,8 @@ func TestUsageColumns(t *testing.T) {
 	base := time.Date(2026, 9, 28, 10, 0, 0, 0, time.UTC)
 	recs := []struct {
 		id, name string
-		ts        time.Time
-		usage     *Usage
+		ts       time.Time
+		usage    *Usage
 	}{
 		{"a", "mcli", base.Add(5 * time.Minute), &Usage{Input: 100, Cache: 900, Output: 10}},
 		{"b", "mcli", base.Add(40 * time.Minute), &Usage{Input: 200, Cache: 800, Output: 20}},
@@ -426,5 +426,77 @@ func TestUsageColumns(t *testing.T) {
 	}
 	if len(ranged) != 1 || ranged[0].Timestamp.Hour() != 11 {
 		t.Errorf("ranged = %+v", ranged)
+	}
+}
+
+// TestInProgressLifecycle: StartRequest makes the exchange visible
+// immediately; RecordRequest updates the same row to completed (no
+// duplicate); a stale in-progress row is marked crashed at reopen.
+func TestInProgressLifecycle(t *testing.T) {
+	s, dir := newTestStore(t)
+	ctx := context.Background()
+	ts := time.Now()
+
+	// Start: row exists, in_progress, no completion data.
+	if err := s.StartRequest(ctx, "t1", "mcli", ts); err != nil {
+		t.Fatal(err)
+	}
+	list, _ := s.List(ctx, Query{})
+	if len(list) != 1 || list[0].State != "in_progress" {
+		t.Fatalf("after start: %+v", list)
+	}
+	if list[0].Status != 0 || list[0].DurationMS != 0 {
+		t.Errorf("in-progress should have no completion data: %+v", list[0])
+	}
+
+	// Complete: same row updated, not duplicated.
+	if err := s.RecordRequest(ctx, "t1", "mcli", ts, 500, 200, 100, 200, &Usage{Input: 1, Cache: 2, Output: 3}); err != nil {
+		t.Fatal(err)
+	}
+	list, _ = s.List(ctx, Query{})
+	if len(list) != 1 {
+		t.Fatalf("dup after complete: %+v", list)
+	}
+	if list[0].State != "" || list[0].Status != 200 || list[0].DurationMS != 500 || list[0].InputTokens != 1 {
+		t.Errorf("after complete: %+v", list[0])
+	}
+
+	// RecordRequest without a preceding StartRequest falls back to insert.
+	if err := s.RecordRequest(ctx, "t2", "mcli", ts, 5, 200, 0, 0, nil); err != nil {
+		t.Fatal(err)
+	}
+	list, _ = s.List(ctx, Query{})
+	if len(list) != 2 {
+		t.Fatalf("fallback insert: %+v", list)
+	}
+
+	// A second in-progress row stays in_progress across close; reopen marks
+	// it crashed.
+	if err := s.StartRequest(ctx, "t3", "mcli", ts); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.close(); err != nil {
+		t.Fatal(err)
+	}
+	s2 := newRawStore(dir)
+	if err := s2.open(); err != nil {
+		t.Fatal(err)
+	}
+	defer s2.close()
+	list, _ = s2.List(ctx, Query{})
+	var t3 *RequestSummary
+	for i := range list {
+		if list[i].TraceID == "t3" {
+			t3 = &list[i]
+		}
+	}
+	if t3 == nil || t3.State != "crashed" {
+		t.Fatalf("t3 after reopen: %+v", t3)
+	}
+	// Completed rows are untouched.
+	for i := range list {
+		if list[i].TraceID == "t1" && list[i].State != "" {
+			t.Errorf("t1 state = %q, want completed", list[i].State)
+		}
 	}
 }

@@ -14,7 +14,13 @@ import { TraceDialog } from '@/components/TraceDialog'
 
 const fmtNum = (n?: number) => (n == null ? '—' : n.toLocaleString())
 
-function StatusBadge({ status }: { status?: number }) {
+function StatusBadge({ status, state }: { status?: number; state?: string }) {
+  if (state === 'in_progress') {
+    return <Badge className="border-sky-500/50 bg-sky-500/10 text-sky-600">in progress</Badge>
+  }
+  if (state === 'crashed') {
+    return <Badge variant="outline" className="border-red-500/50 text-red-600">crashed</Badge>
+  }
   if (!status) return <Badge variant="outline">—</Badge>
   const cls =
     status < 300
@@ -27,6 +33,15 @@ function StatusBadge({ status }: { status?: number }) {
       {status}
     </Badge>
   )
+}
+
+const fmtDuration = (e: RequestSummary) => {
+  if (e.state === 'in_progress') {
+    // In-flight: show live elapsed instead of the (unset) final duration.
+    const ms = Date.now() - new Date(e.timestamp).getTime()
+    return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`
+  }
+  return e.duration_ms != null ? `${e.duration_ms}ms` : '—'
 }
 
 const fmtTime = (ts: string) => {
@@ -89,11 +104,9 @@ export function RequestTable({ traceName, refreshKey }: { traceName: string; ref
                     <Badge variant="secondary">{e.trace_name}</Badge>
                   </TableCell>
                   <TableCell>
-                    <StatusBadge status={e.status} />
+                    <StatusBadge status={e.status} state={e.state} />
                   </TableCell>
-                  <TableCell className="text-right text-xs">
-                    {e.duration_ms != null ? `${e.duration_ms}ms` : '—'}
-                  </TableCell>
+                  <TableCell className="text-right text-xs">{fmtDuration(e)}</TableCell>
                   <TableCell className="text-right font-mono text-xs">{fmtNum(e.input_tokens)}</TableCell>
                   <TableCell className="text-right font-mono text-xs">{fmtNum(e.cache_tokens)}</TableCell>
                   <TableCell className="text-right font-mono text-xs">{fmtNum(e.output_tokens)}</TableCell>

@@ -9,6 +9,7 @@ export interface RequestSummary {
   status?: number
   req_bytes: number
   resp_bytes: number
+  state?: 'in_progress' | 'crashed'
   input_tokens?: number
   cache_tokens?: number
   output_tokens?: number
