@@ -41,7 +41,7 @@ function App() {
           <RangeButtons rangeHours={rangeHours} onRange={setRangeHours} />
           <Select value={stage || '__all__'} onValueChange={(v) => setStage(!v || v === '__all__' ? '' : v)}>
             <SelectTrigger className="w-32">
-              <SelectValue />
+              <SelectValue>{stage === '' ? 'all stages' : stage}</SelectValue>
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="__all__">all stages</SelectItem>

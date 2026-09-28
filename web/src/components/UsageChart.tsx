@@ -113,7 +113,7 @@ export function UsageChart({ stage, interval, rangeHours, onInterval }: Props) {
         </CardTitle>
         <Select value={interval} onValueChange={(v) => v && onInterval(v)}>
           <SelectTrigger className="w-28">
-            <SelectValue />
+            <SelectValue>{INTERVALS.find((i) => i.value === interval)?.label}</SelectValue>
           </SelectTrigger>
           <SelectContent>
             {INTERVALS.map((i) => (
