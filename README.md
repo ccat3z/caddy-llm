@@ -17,6 +17,7 @@ Configure via JSON (`caddy-llm run --config caddy.json`) or Caddyfile
 | `http.handlers.llm_route` | Model-based upstream routing with fallthrough: each block matches the request's model (literal or anchored regex with rewrite), runs its own subchain on a cloned request, and falls through to the next block on 429/404/5xx or subchain errors. |
 | `http.handlers.trace` | Captures the request/response passing through it (both sides of a translation when chained) and records them to the trace store. Extracts token usage (input / cache / output, three independent counts) from the response; `cache_in_input: true` when the stage's upstream counts cache inside input (OpenAI-style `prompt_tokens` — cache is then subtracted so the store is always independent). |
 | `http.handlers.llm_tracer_api` | HTTP query API for recorded traces and token-usage time series. |
+| [`web/`](web/) | React dashboard over the traces API: stacked token-usage time series and the request event table with raw HTTP exchanges. |
 | `llm_tracer` (app) | Trace persistence: raw replayable HTTP messages in rolling `history-*.raw` files + SQLite index. |
 
 ## Examples
