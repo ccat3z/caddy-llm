@@ -183,8 +183,9 @@ The handler is prefix-agnostic: mount it at any path with `rewrite`'s
   requests}]`. `interval` accepts a Go duration (`30m`, `1h`) or bare
   seconds; `from`/`to` are RFC3339 bounds (either may be omitted).
 - `GET /llm/traces/ui/` — the dashboard itself, embedded into the binary
-  (build `web/` first; see [web/README.md](web/README.md)). `ui` is a
-  reserved segment — don't name a trace stage "ui".
+  (build `web/` first; see [web/README.md](web/README.md)). The `ui`
+  prefix only claims the first path segment; stage names live in the
+  second segment (`/{traceID}/{name}`) and are unaffected.
 
 Token accounting: the `trace` handler parses usage out of the response
 (Claude and OpenAI formats, streaming and buffered). Upstreams whose

@@ -13,7 +13,9 @@ import (
 
 // uiPrefix is the reserved first path segment under the TraceAPI mount
 // where the embedded dashboard is served (e.g. mounted at /llm/traces, the
-// UI is at /llm/traces/ui/). "ui" is therefore not usable as a stage name.
+// UI is at /llm/traces/ui/). It only claims the first segment: detail
+// routes are {traceID}/{name} with random 16-hex traceIDs, and stage names
+// sit in the second segment, so neither can collide with it.
 const uiPrefix = "ui/"
 
 // distFS is the embedded dashboard, or nil when web/dist was never built
