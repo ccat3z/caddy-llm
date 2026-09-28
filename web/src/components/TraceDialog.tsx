@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { DownloadIcon } from 'lucide-react'
 import { decodeBase64, fetchTrace, type RequestDetail } from '@/api'
 import { assembleSSE } from '@/lib/assemble'
 import { YamlBlock } from '@/lib/yaml'
@@ -15,7 +16,8 @@ import {
 // BodyView renders a message body pretty (YAML-ish) by default with a
 // pretty/raw toggle: SSE streams are first assembled into one message,
 // JSON bodies rendered directly. Bodies that are neither show raw only.
-function BodyView({ body }: { body: string }) {
+// Every body gets a download button (raw bytes) next to the toggle.
+function BodyView({ body, downloadName }: { body: string; downloadName: string }) {
   const trimmed = body.trim()
   const isSSE = trimmed.startsWith('event:') || trimmed.startsWith('data:')
   const assembled = isSSE ? assembleSSE(trimmed) : null
@@ -32,9 +34,16 @@ function BodyView({ body }: { body: string }) {
   }
 
   const [raw, setRaw] = useState(false)
-  if (pretty === null) {
-    return <pre className="p-3 text-xs whitespace-pre-wrap break-all">{body}</pre>
+
+  const download = () => {
+    const url = URL.createObjectURL(new Blob([body], { type: 'text/plain;charset=utf-8' }))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = downloadName
+    a.click()
+    URL.revokeObjectURL(url)
   }
+
   const seg = (active: boolean) =>
     `px-2 py-0.5 ${active ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'}`
   return (
@@ -50,16 +59,27 @@ function BodyView({ body }: { body: string }) {
             </Badge>
           </>
         )}
-        <div className="ml-auto flex overflow-hidden rounded-md border text-xs">
-          <button className={seg(!raw)} onClick={() => setRaw(false)}>
-            pretty
+        <div className="ml-auto flex items-center gap-2">
+          <button
+            className="text-muted-foreground hover:text-foreground"
+            title={`Download ${downloadName}`}
+            onClick={download}
+          >
+            <DownloadIcon size={14} />
           </button>
-          <button className={seg(raw)} onClick={() => setRaw(true)}>
-            raw
-          </button>
+          {pretty !== null && (
+            <div className="flex overflow-hidden rounded-md border text-xs">
+              <button className={seg(!raw)} onClick={() => setRaw(false)}>
+                pretty
+              </button>
+              <button className={seg(raw)} onClick={() => setRaw(true)}>
+                raw
+              </button>
+            </div>
+          )}
         </div>
       </div>
-      {raw ? (
+      {pretty === null || raw ? (
         <pre className="p-3 text-xs whitespace-pre-wrap break-all">{body}</pre>
       ) : (
         <YamlBlock value={pretty} />
@@ -69,8 +89,8 @@ function BodyView({ body }: { body: string }) {
 }
 
 // HttpSection is one direction of the exchange: headers verbatim, body
-// pretty-rendered (YAML-ish) with a raw toggle.
-function HttpSection({ title, raw }: { title: string; raw: string }) {
+// pretty-rendered (YAML-ish) with a raw toggle and a download button.
+function HttpSection({ title, raw, downloadName }: { title: string; raw: string; downloadName: string }) {
   const [open, setOpen] = useState(true)
   const sep = raw.indexOf('\r\n\r\n')
   const head = sep >= 0 ? raw.slice(0, sep) : raw
@@ -92,7 +112,7 @@ function HttpSection({ title, raw }: { title: string; raw: string }) {
           {/* Head and body scroll independently: long header blocks must
               not squeeze the body out of the section. */}
           <pre className="max-h-40 overflow-auto border-b bg-muted/60 p-3 text-xs whitespace-pre-wrap break-all">{head}</pre>
-          <div className="max-h-[45vh] overflow-auto">{body && <BodyView body={body} />}</div>
+          <div className="max-h-[45vh] overflow-auto">{body && <BodyView body={body} downloadName={downloadName} />}</div>
         </div>
       )}
     </div>
@@ -131,10 +151,18 @@ export function TraceDialog({
         </DialogHeader>
         {error && <p className="text-sm text-destructive">{error}</p>}
         {!data && !error && <p className="text-sm text-muted-foreground">Loading…</p>}
-        {data && (
+        {data && detail && (
           <div className="space-y-2 overflow-auto">
-            <HttpSection title="REQUEST" raw={decodeBase64(data.request_raw)} />
-            <HttpSection title="RESPONSE" raw={decodeBase64(data.response_raw)} />
+            <HttpSection
+              title="REQUEST"
+              raw={decodeBase64(data.request_raw)}
+              downloadName={`${detail.traceID}-${detail.name}-request.log`}
+            />
+            <HttpSection
+              title="RESPONSE"
+              raw={decodeBase64(data.response_raw)}
+              downloadName={`${detail.traceID}-${detail.name}-response.log`}
+            />
           </div>
         )}
       </DialogContent>
