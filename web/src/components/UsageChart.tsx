@@ -81,7 +81,9 @@ export function UsageChart({ traceName, interval, rangeHours, refreshKey, onInte
 
   // Fill empty buckets: the API omits them, the chart shows every slot in
   // the range (bucket edges are interval-aligned to the unix epoch, same as
-  // the SQL bucketing).
+  // the SQL bucketing). The category key is the bucket epoch — NOT the
+  // formatted label: labels repeat across days ("20:00 – 22:00" twice in a
+  // 24h view), and recharts then mixes up bar/tooltip data.
   const data = useMemo(() => {
     const ivMs = interval * 1000
     const to = Date.now()
@@ -91,10 +93,10 @@ export function UsageChart({ traceName, interval, rangeHours, refreshKey, onInte
     for (let t = Math.floor(from / ivMs) * ivMs; t < to; t += ivMs) {
       const b = byStart.get(t)
       out.push({
+        t,
         input_tokens: b?.input_tokens ?? 0,
         cache_tokens: b?.cache_tokens ?? 0,
         output_tokens: b?.output_tokens ?? 0,
-        label: bucketLabel(t, interval),
       })
     }
     return out
@@ -152,10 +154,16 @@ export function UsageChart({ traceName, interval, rangeHours, refreshKey, onInte
           <ResponsiveContainer width="100%" height={260}>
             <BarChart data={data} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" vertical={false} />
-              <XAxis dataKey="label" tickLine={false} fontSize={10} />
+              <XAxis
+                dataKey="t"
+                tickLine={false}
+                fontSize={10}
+                tickFormatter={(t: number) => bucketLabel(t, interval)}
+              />
               <YAxis tickFormatter={fmtTokens} tickLine={false} axisLine={false} fontSize={11} width={48} />
               <Tooltip
                 formatter={(value, name) => [fmtTokens(Number(value ?? 0)), String(name)]}
+                labelFormatter={(t) => bucketLabel(Number(t), interval)}
               />
               <Bar dataKey="input_tokens" name="input" stackId="t" fill="#0ea5e9" />
               <Bar dataKey="cache_tokens" name="cache" stackId="t" fill="#f59e0b" />
