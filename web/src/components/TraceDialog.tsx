@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react'
 import { decodeBase64, fetchTrace, type RequestDetail } from '@/api'
 import { assembleSSE } from '@/lib/assemble'
 import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
 import {
   Dialog,
   DialogContent,
@@ -25,13 +24,15 @@ function PrettyBody({ body }: { body: string }) {
 }
 
 // SSEBody shows an assembled view of the event stream by default, with a
-// raw toggle (like CPA's request log).
+// segmented assembled/raw toggle (like CPA's request log).
 function SSEBody({ body }: { body: string }) {
   const assembled = assembleSSE(body)
   const [raw, setRaw] = useState(false)
   if (!assembled) {
     return <pre className="p-3 text-xs whitespace-pre-wrap">{body}</pre>
   }
+  const seg = (active: boolean) =>
+    `px-2 py-0.5 ${active ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'}`
   return (
     <div>
       <div className="flex items-center gap-2 border-b bg-muted/40 px-3 py-1.5">
@@ -41,9 +42,14 @@ function SSEBody({ body }: { body: string }) {
         <Badge variant="outline" className="text-xs">
           {assembled.format}
         </Badge>
-        <Button size="sm" variant="ghost" className="ml-auto h-6 px-2 text-xs" onClick={() => setRaw(!raw)}>
-          {raw ? 'assembled' : 'raw'}
-        </Button>
+        <div className="ml-auto flex overflow-hidden rounded-md border text-xs">
+          <button className={seg(!raw)} onClick={() => setRaw(false)}>
+            assembled
+          </button>
+          <button className={seg(raw)} onClick={() => setRaw(true)}>
+            raw
+          </button>
+        </div>
       </div>
       {raw ? (
         <pre className="p-3 text-xs whitespace-pre-wrap">{body}</pre>
@@ -108,7 +114,7 @@ export function TraceDialog({
 
   return (
     <Dialog open={detail !== null} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="sm:max-w-3xl">
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle className="font-mono text-sm">
             {detail ? `${detail.traceID} / ${detail.name}` : ''}
