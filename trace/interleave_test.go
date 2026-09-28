@@ -33,7 +33,7 @@ func TestConcurrentStreamsInterleave(t *testing.T) {
 		}
 	}
 	for _, id := range []string{"A", "B"} {
-		if err := s.RecordRequest(ctx, id, "glm", time.Now(), 1, 200, 0, 0); err != nil {
+		if err := s.RecordRequest(ctx, id, "glm", time.Now(), 1, 200, 0, 0, nil); err != nil {
 			t.Fatal(err)
 		}
 	}

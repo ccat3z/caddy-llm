@@ -37,7 +37,9 @@ http://:8080 {
 			route {
 				rewrite * /api/coding/paas/v4/chat/completions
 				claude2openai
-				trace glm
+				trace glm {
+					cache_in_input
+				}
 				reverse_proxy open.bigmodel.cn:443
 			}
 		}

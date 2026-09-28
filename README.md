@@ -15,8 +15,8 @@ Configure via JSON (`caddy-llm run --config caddy.json`) or Caddyfile
 |---|---|
 | `http.handlers.claude2openai` | Translates Anthropic request/response bodies to OpenAI chat-completions and back. Path routing and upstream-path rewriting are left to route matchers and the `rewrite` handler; forwarding to `reverse_proxy`. |
 | `http.handlers.llm_route` | Model-based upstream routing with fallthrough: each block matches the request's model (literal or anchored regex with rewrite), runs its own subchain on a cloned request, and falls through to the next block on 429/404/5xx or subchain errors. |
-| `http.handlers.trace` | Captures the request/response passing through it (both sides of a translation when chained) and records them to the trace store. |
-| `http.handlers.llm_tracer_api` | HTTP query API for recorded traces. |
+| `http.handlers.trace` | Captures the request/response passing through it (both sides of a translation when chained) and records them to the trace store. Extracts token usage (input / cache / output, three independent counts) from the response; `cache_in_input: true` when the stage's upstream counts cache inside input (OpenAI-style `prompt_tokens` — cache is then subtracted so the store is always independent). |
+| `http.handlers.llm_tracer_api` | HTTP query API for recorded traces and token-usage time series. |
 | `llm_tracer` (app) | Trace persistence: raw replayable HTTP messages in rolling `history-*.raw` files + SQLite index. |
 
 ## Examples
@@ -171,9 +171,24 @@ The handler is prefix-agnostic: mount it at any path with `rewrite`'s
 ]
 ```
 
-- `GET /llm/traces?stage=claude&limit=50&offset=0` — newest-first summaries.
+- `GET /llm/traces?stage=claude&limit=50&offset=0` — newest-first summaries,
+  including token usage per exchange (`input_tokens` / `cache_tokens` /
+  `output_tokens`, three independent counts; absent when the response
+  carried no usage).
 - `GET /llm/traces/{traceID}/{name}` — full exchange: metadata plus the raw
   request/response messages (base64 in JSON).
+- `GET /llm/traces/usage?interval=1h&from=&to=&stage=` — token-usage time
+  series: buckets `[{timestamp, input_tokens, cache_tokens, output_tokens,
+  requests}]`. `interval` accepts a Go duration (`30m`, `1h`) or bare
+  seconds; `from`/`to` are RFC3339 bounds (either may be omitted).
+
+Token accounting: the `trace` handler parses usage out of the response
+(Claude and OpenAI formats, streaming and buffered). Upstreams whose
+reported input already includes cache tokens (OpenAI-style `prompt_tokens`,
+e.g. a chat-completions stage) should set `cache_in_input: true` so the
+store always holds three independent counts; Claude-native upstreams report
+`input_tokens` excluding cache already (leave it false). Cache counts read
+tokens only — cache writes stay inside input, matching Anthropic semantics.
 
 ## Build
 

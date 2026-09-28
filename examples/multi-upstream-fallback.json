@@ -87,7 +87,8 @@
                           },
                           {
                             "handler": "trace",
-                            "stage": "glm"
+                            "stage": "glm",
+                            "cache_in_input": true
                           },
                           {
                             "handler": "reverse_proxy",

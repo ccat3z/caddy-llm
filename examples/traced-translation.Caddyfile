@@ -24,7 +24,9 @@ http://:8080 {
 		trace claude
 		rewrite * /v1/chat/completions
 		claude2openai
-		trace openai
+		trace openai {
+			cache_in_input
+		}
 		reverse_proxy open.bigmodel.cn:443
 	}
 

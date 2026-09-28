@@ -42,7 +42,8 @@
                 },
                 {
                   "handler": "trace",
-                  "stage": "openai"
+                  "stage": "openai",
+                  "cache_in_input": true
                 },
                 {
                   "handler": "reverse_proxy",

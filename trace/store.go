@@ -95,6 +95,13 @@ type RequestSummary struct {
 	Status     int       `json:"status,omitempty"`
 	ReqBytes   int       `json:"req_bytes"`
 	RespBytes  int       `json:"resp_bytes"`
+	// Token accounting, normalized so the three are independent (input
+	// never includes cache). HasUsage is false for exchanges whose
+	// response carried no usage (errors, probes, truncated streams).
+	InputTokens  int  `json:"input_tokens,omitempty"`
+	CacheTokens  int  `json:"cache_tokens,omitempty"`
+	OutputTokens int  `json:"output_tokens,omitempty"`
+	HasUsage     bool `json:"has_usage,omitempty"`
 }
 
 // RequestDetail is a full exchange: the aggregated metadata plus the raw,
@@ -103,6 +110,15 @@ type RequestDetail struct {
 	RequestSummary
 	Request  []byte `json:"request_raw"`  // full request message: request-line + headers + body
 	Response []byte `json:"response_raw"` // full response message: status line + headers + body
+}
+
+// UsageBucket is one interval of the usage time series.
+type UsageBucket struct {
+	Timestamp time.Time `json:"timestamp"`
+	Input     int64     `json:"input_tokens"`
+	Cache     int64     `json:"cache_tokens"`
+	Output    int64     `json:"output_tokens"`
+	Requests  int64     `json:"requests"`
 }
 
 // Query filters a List call.
@@ -124,10 +140,16 @@ type storage interface {
 	Save(ctx context.Context, traceID, name string, isReq bool, p []byte) error
 
 	// RecordRequest writes the aggregate row for a completed exchange.
-	RecordRequest(ctx context.Context, traceID, name string, ts time.Time, durMS, status, reqBytes, respBytes int) error
+	// usage is nil when the response carried no token accounting.
+	RecordRequest(ctx context.Context, traceID, name string, ts time.Time, durMS, status, reqBytes, respBytes int, usage *Usage) error
 
 	List(ctx context.Context, q Query) ([]RequestSummary, error)
 	Get(ctx context.Context, traceID, name string) (*RequestDetail, error)
+
+	// UsageSeries aggregates token usage into time buckets of interval
+	// seconds, optionally filtered by stage and time range (zero times =
+	// unbounded).
+	UsageSeries(ctx context.Context, intervalSec int64, from, to time.Time, stage string) ([]UsageBucket, error)
 }
 
 // ---------- raw file + sqlite index implementation ----------
@@ -214,11 +236,23 @@ CREATE TABLE IF NOT EXISTS llm_requests (
     dur_ms      INTEGER,
     status      INTEGER,
     req_bytes   INTEGER,
-    resp_bytes  INTEGER
+    resp_bytes  INTEGER,
+    in_tokens   INTEGER,
+    cache_tokens INTEGER,
+    out_tokens  INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_requests_name ON llm_requests(trace_name);`
-	_, err := s.db.Exec(schema)
-	return err
+	if _, err := s.db.Exec(schema); err != nil {
+		return err
+	}
+	// Migrate pre-token-stats databases: add the columns if missing.
+	// (Exchanges recorded before this have NULL usage — no usage detected.)
+	for _, col := range []string{"in_tokens", "cache_tokens", "out_tokens"} {
+		if _, err := s.db.Exec(`ALTER TABLE llm_requests ADD COLUMN ` + col + ` INTEGER`); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *rawStore) close() error {
@@ -288,13 +322,32 @@ func boolInt(b bool) int {
 }
 
 // RecordRequest implements storage.
-func (s *rawStore) RecordRequest(_ context.Context, traceID, name string, ts time.Time, durMS, status, reqBytes, respBytes int) error {
+func (s *rawStore) RecordRequest(_ context.Context, traceID, name string, ts time.Time, durMS, status, reqBytes, respBytes int, usage *Usage) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var in, cache, out any
+	if usage != nil {
+		in, cache, out = usage.Input, usage.Cache, usage.Output
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO llm_requests (trace_id, trace_name, ts, dur_ms, status, req_bytes, resp_bytes) VALUES (?,?,?,?,?,?,?)`,
-		traceID, name, ts.UTC(), durMS, status, reqBytes, respBytes)
+		`INSERT INTO llm_requests (trace_id, trace_name, ts, dur_ms, status, req_bytes, resp_bytes, in_tokens, cache_tokens, out_tokens) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		traceID, name, ts.UTC(), durMS, status, reqBytes, respBytes, in, cache, out)
 	return err
+}
+
+// summaryColumns is the SELECT projection shared by List and Get.
+const summaryColumns = `trace_id, trace_name, ts, dur_ms, status, req_bytes, resp_bytes, in_tokens, cache_tokens, out_tokens`
+
+// scanSummary scans one llm_requests row (summaryColumns order) into a
+// RequestSummary. NULL token columns mean no usage was detected.
+func scanSummary(row interface{ Scan(...any) error }, r *RequestSummary) error {
+	var in, cache, out sql.NullInt64
+	if err := row.Scan(&r.TraceID, &r.TraceName, &r.Timestamp, &r.DurationMS, &r.Status, &r.ReqBytes, &r.RespBytes, &in, &cache, &out); err != nil {
+		return err
+	}
+	r.HasUsage = in.Valid || cache.Valid || out.Valid
+	r.InputTokens, r.CacheTokens, r.OutputTokens = int(in.Int64), int(cache.Int64), int(out.Int64)
+	return nil
 }
 
 // List implements storage.
@@ -302,7 +355,7 @@ func (s *rawStore) List(_ context.Context, q Query) ([]RequestSummary, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	query := `SELECT trace_id, trace_name, ts, dur_ms, status, req_bytes, resp_bytes FROM llm_requests`
+	query := `SELECT ` + summaryColumns + ` FROM llm_requests`
 	args := []any{}
 	if q.Name != "" {
 		query += ` WHERE trace_name = ?`
@@ -321,7 +374,7 @@ func (s *rawStore) List(_ context.Context, q Query) ([]RequestSummary, error) {
 	out := []RequestSummary{}
 	for rows.Next() {
 		var r RequestSummary
-		if err := rows.Scan(&r.TraceID, &r.TraceName, &r.Timestamp, &r.DurationMS, &r.Status, &r.ReqBytes, &r.RespBytes); err != nil {
+		if err := scanSummary(rows, &r); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -336,10 +389,9 @@ func (s *rawStore) Get(_ context.Context, traceID, name string) (*RequestDetail,
 
 	det := &RequestDetail{}
 	// Aggregate row (may be missing for incomplete streams).
-	aggErr := s.db.QueryRow(
-		`SELECT trace_id, trace_name, ts, dur_ms, status, req_bytes, resp_bytes FROM llm_requests
-		 WHERE trace_id=? AND trace_name=? ORDER BY id DESC LIMIT 1`, traceID, name).
-		Scan(&det.TraceID, &det.TraceName, &det.Timestamp, &det.DurationMS, &det.Status, &det.ReqBytes, &det.RespBytes)
+	aggErr := scanSummary(s.db.QueryRow(
+		`SELECT `+summaryColumns+` FROM llm_requests
+		 WHERE trace_id=? AND trace_name=? ORDER BY id DESC LIMIT 1`, traceID, name), &det.RequestSummary)
 	if aggErr != nil && aggErr != sql.ErrNoRows {
 		return nil, aggErr
 	}
@@ -380,6 +432,60 @@ func (s *rawStore) Get(_ context.Context, traceID, name string) (*RequestDetail,
 		return nil, err
 	}
 	return det, nil
+}
+
+// UsageSeries implements storage. Bucketing happens in SQL on unix seconds
+// (strftime parses the RFC3339 ts), so bucket edges are interval-aligned and
+// empty buckets are simply absent.
+func (s *rawStore) UsageSeries(_ context.Context, intervalSec int64, from, to time.Time, stage string) ([]UsageBucket, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if intervalSec <= 0 {
+		intervalSec = 3600
+	}
+	var (
+		where []string
+		args  []any
+	)
+	if stage != "" {
+		where = append(where, `trace_name = ?`)
+		args = append(args, stage)
+	}
+	if !from.IsZero() {
+		where = append(where, `ts >= ?`)
+		args = append(args, from.UTC())
+	}
+	if !to.IsZero() {
+		where = append(where, `ts < ?`)
+		args = append(args, to.UTC())
+	}
+	// ts is stored RFC3339 UTC ("...T10:05:00Z"); SQLite's strftime can't
+	// parse the trailing Z, so bucket on the first 19 chars.
+	query := `SELECT (CAST(strftime('%s', substr(ts, 1, 19)) AS INTEGER) / ?) * ? AS bucket,
+		COALESCE(SUM(in_tokens), 0), COALESCE(SUM(cache_tokens), 0), COALESCE(SUM(out_tokens), 0), COUNT(*)
+		FROM llm_requests`
+	if len(where) > 0 {
+		query += ` WHERE ` + strings.Join(where, ` AND `)
+	}
+	query += ` GROUP BY bucket ORDER BY bucket`
+	args = append([]any{intervalSec, intervalSec}, args...)
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []UsageBucket{}
+	for rows.Next() {
+		var b UsageBucket
+		var bucket int64
+		if err := rows.Scan(&bucket, &b.Input, &b.Cache, &b.Output, &b.Requests); err != nil {
+			return nil, err
+		}
+		b.Timestamp = time.Unix(bucket, 0).UTC()
+		out = append(out, b)
+	}
+	return out, rows.Err()
 }
 
 // readParts concatenates the raw bytes of the given segments. Every history
@@ -479,6 +585,18 @@ func (t *TraceAPI) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyh
 		return json.NewEncoder(w).Encode(entries)
 	}
 
+	// Usage time series: /usage?interval=1h&from=&to=&stage=
+	if rest == "usage" {
+		interval := int64(durationQuery(r, "interval", time.Hour).Seconds())
+		from, _ := time.Parse(time.RFC3339, r.URL.Query().Get("from"))
+		to, _ := time.Parse(time.RFC3339, r.URL.Query().Get("to"))
+		buckets, err := t.app.Storage().UsageSeries(r.Context(), interval, from, to, r.URL.Query().Get("stage"))
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(w).Encode(buckets)
+	}
+
 	parts := strings.SplitN(rest, "/", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		w.WriteHeader(http.StatusNotFound)
@@ -504,6 +622,22 @@ func intQuery(r *http.Request, name string, def int) int {
 		return def
 	}
 	return n
+}
+
+// durationQuery parses a duration query param, accepting Go duration strings
+// ("1h", "30m") or bare seconds ("900").
+func durationQuery(r *http.Request, name string, def time.Duration) time.Duration {
+	v := r.URL.Query().Get(name)
+	if v == "" {
+		return def
+	}
+	if d, err := time.ParseDuration(v); err == nil && d > 0 {
+		return d
+	}
+	if n, err := strconv.Atoi(v); err == nil && n > 0 {
+		return time.Duration(n) * time.Second
+	}
+	return def
 }
 
 // ---------- Caddyfile ----------

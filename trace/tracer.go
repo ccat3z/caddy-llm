@@ -41,6 +41,13 @@ type Tracer struct {
 	// "openai".
 	Stage string `json:"stage,omitempty"`
 
+	// CacheInInput says whether the usage reported at this stage counts
+	// cache tokens inside input tokens (OpenAI-style prompt_tokens). When
+	// true the tracer subtracts cache from input so the store always holds
+	// three independent counts. Claude-native upstreams report
+	// input_tokens excluding cache already — leave this false for them.
+	CacheInInput bool `json:"cache_in_input,omitempty"`
+
 	logger *zap.Logger
 	app    *Store
 }
@@ -150,8 +157,9 @@ func (t *Tracer) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 		status = http.StatusOK
 	}
 	if s != nil {
+		usage := extractUsage(rw.tail.buf).normalize(t.CacheInInput)
 		if rerr := s.RecordRequest(r.Context(), traceID, t.Stage, start.UTC(),
-			int(time.Since(start).Milliseconds()), status, reqBytes, rw.written); rerr != nil {
+			int(time.Since(start).Milliseconds()), status, reqBytes, rw.written, usage); rerr != nil {
 			t.logger.Error("record request", zap.Error(rerr), zap.String("id", traceID))
 		}
 	}
@@ -171,6 +179,7 @@ type teeResponseWriter struct {
 	stage     string
 	storage   storage
 	headSaved bool
+	tail      tailBuffer // bounded tail of the body, for usage extraction
 }
 
 func (w *teeResponseWriter) WriteHeader(status int) {
@@ -212,6 +221,7 @@ func (w *teeResponseWriter) Write(p []byte) (int, error) {
 	if w.status == 0 {
 		w.WriteHeader(http.StatusOK)
 	}
+	w.tail.Write(p)
 	if w.storage != nil {
 		if err := w.storage.Save(nil, w.traceID, w.stage, false, p); err != nil {
 			w.tracer.logger.Error("save response chunk", zap.Error(err), zap.String("id", w.traceID))
@@ -245,6 +255,17 @@ func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error)
 			return nil, h.ArgErr()
 		}
 		t.Stage = h.Val()
+		if h.NextArg() {
+			return nil, h.ArgErr()
+		}
+		for nesting := h.Nesting(); h.NextBlock(nesting); {
+			switch h.Val() {
+			case "cache_in_input":
+				t.CacheInInput = true
+			default:
+				return nil, h.Errf("unknown subdirective %q", h.Val())
+			}
+		}
 	}
 	return &t, nil
 }

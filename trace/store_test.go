@@ -62,13 +62,13 @@ func TestRawStoreRoundTrip(t *testing.T) {
 	if err := s.Save(ctx, "t1", "claude", false, []byte("event: b\n")); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RecordRequest(ctx, "t1", "claude", time.Now(), 42, 200, len(`{"a":1}`), 30); err != nil {
+	if err := s.RecordRequest(ctx, "t1", "claude", time.Now(), 42, 200, len(`{"a":1}`), 30, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Save(ctx, "t2", "openai", true, reqMsg(`{"b":2}`)); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RecordRequest(ctx, "t2", "openai", time.Now(), 7, 200, len(`{"b":2}`), 0); err != nil {
+	if err := s.RecordRequest(ctx, "t2", "openai", time.Now(), 7, 200, len(`{"b":2}`), 0, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -180,7 +180,7 @@ func TestRawStoreRotate(t *testing.T) {
 	if secondFile == firstFile {
 		t.Fatalf("no rotation: still %s", firstFile)
 	}
-	if err := s.RecordRequest(ctx, "t1", "glm", time.Now(), 1, 200, 0, len(big)+len("tail")); err != nil {
+	if err := s.RecordRequest(ctx, "t1", "glm", time.Now(), 1, 200, 0, len(big)+len("tail"), nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -218,7 +218,7 @@ func TestRawStoreReopen(t *testing.T) {
 	if err := s.Save(ctx, "t1", "claude", false, []byte("hello")); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RecordRequest(ctx, "t1", "claude", time.Now(), 5, 200, 7, 5); err != nil {
+	if err := s.RecordRequest(ctx, "t1", "claude", time.Now(), 5, 200, 7, 5, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.close(); err != nil {
@@ -250,7 +250,7 @@ func TestTraceAPIServeHTTP(t *testing.T) {
 	if err := s.Save(ctx, "t1", "claude", true, reqMsg(`abcdefg`)); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RecordRequest(ctx, "t1", "claude", time.Now(), 3, 200, 7, 0); err != nil {
+	if err := s.RecordRequest(ctx, "t1", "claude", time.Now(), 3, 200, 7, 0, nil); err != nil {
 		t.Fatal(err)
 	}
 	api := &TraceAPI{app: &Store{db: s}}
@@ -325,7 +325,7 @@ func TestRawStoreRotateConcurrentSegments(t *testing.T) {
 	if err := s.Save(ctx, "C", "glm", false, []byte("C-SECRET")); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RecordRequest(ctx, "B", "glm", time.Now(), 1, 200, 0, 0); err != nil {
+	if err := s.RecordRequest(ctx, "B", "glm", time.Now(), 1, 200, 0, 0, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -345,4 +345,86 @@ func truncStrFor(s string, n int) string {
 		return s[:n] + "..."
 	}
 	return s
+}
+
+// TestUsageColumns: usage lands in llm_requests, NULL when absent, and the
+// series aggregates into interval buckets.
+func TestUsageColumns(t *testing.T) {
+	s, _ := newTestStore(t)
+	defer s.close()
+	ctx := context.Background()
+
+	base := time.Date(2026, 9, 28, 10, 0, 0, 0, time.UTC)
+	recs := []struct {
+		id, stage string
+		ts        time.Time
+		usage     *Usage
+	}{
+		{"a", "mcli", base.Add(5 * time.Minute), &Usage{Input: 100, Cache: 900, Output: 10}},
+		{"b", "mcli", base.Add(40 * time.Minute), &Usage{Input: 200, Cache: 800, Output: 20}},
+		{"c", "friday", base.Add(70 * time.Minute), &Usage{Input: 300, Cache: 700, Output: 30}},
+		{"d", "mcli", base.Add(80 * time.Minute), nil}, // probe, no usage
+	}
+	for _, r := range recs {
+		if err := s.RecordRequest(ctx, r.id, r.stage, r.ts, 1, 200, 0, 0, r.usage); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// List returns token fields; the probe row has none.
+	list, err := s.List(ctx, Query{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 4 {
+		t.Fatalf("list = %d entries", len(list))
+	}
+	var probe *RequestSummary
+	for i := range list {
+		if list[i].TraceID == "a" && (list[i].InputTokens != 100 || list[i].CacheTokens != 900 || list[i].OutputTokens != 10 || !list[i].HasUsage) {
+			t.Errorf("entry a = %+v", list[i])
+		}
+		if list[i].TraceID == "d" {
+			probe = &list[i]
+		}
+	}
+	if probe == nil || probe.HasUsage {
+		t.Errorf("probe should have no usage: %+v", probe)
+	}
+
+	// Hourly buckets: 10:00 has a+b, 11:00 has c+d.
+	buckets, err := s.UsageSeries(ctx, 3600, time.Time{}, time.Time{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(buckets) != 2 {
+		t.Fatalf("buckets = %+v", buckets)
+	}
+	if buckets[0].Timestamp.Hour() != 10 || buckets[0].Input != 300 || buckets[0].Cache != 1700 || buckets[0].Output != 30 || buckets[0].Requests != 2 {
+		t.Errorf("bucket[0] = %+v", buckets[0])
+	}
+	if buckets[1].Timestamp.Hour() != 11 || buckets[1].Input != 300 || buckets[1].Requests != 2 {
+		t.Errorf("bucket[1] = %+v", buckets[1])
+	}
+
+	// 30-minute buckets split a/b; stage filter applies.
+	half, err := s.UsageSeries(ctx, 1800, time.Time{}, time.Time{}, "mcli")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(half) != 3 {
+		t.Fatalf("30m buckets = %+v", half)
+	}
+	if half[0].Input != 100 || half[1].Input != 200 {
+		t.Errorf("30m buckets = %+v", half)
+	}
+
+	// Time range filter.
+	ranged, err := s.UsageSeries(ctx, 3600, base.Add(50*time.Minute), time.Time{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ranged) != 1 || ranged[0].Timestamp.Hour() != 11 {
+		t.Errorf("ranged = %+v", ranged)
+	}
 }
