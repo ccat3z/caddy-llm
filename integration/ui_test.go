@@ -77,3 +77,10 @@ func TestTraceUIRoute(t *testing.T) {
 		t.Errorf("list = %d %s", resp3.StatusCode, lb)
 	}
 }
+
+// TestTracerDirRequired: the llm_tracer app refuses to load without a
+// storage dir — no silent CWD default.
+func TestTracerDirRequired(t *testing.T) {
+	cfg := strings.Replace(jsonConfig(), `"apps":{"http"`, `"apps":{"llm_tracer":{},"http"`, 1)
+	caddytest.AssertLoadError(t, cfg, "json", "requires a storage dir")
+}
