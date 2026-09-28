@@ -616,6 +616,26 @@ func (t *TraceAPI) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyh
 		_, _ = w.Write([]byte(`{"error":"not found"}`))
 		return nil
 	}
+	// Raw download: ?part=request|response serves one direction's raw
+	// message bytes as an attachment (right-clickable link from the UI).
+	if part := r.URL.Query().Get("part"); part != "" {
+		var raw []byte
+		switch part {
+		case "request":
+			raw = e.Request
+		case "response":
+			raw = e.Response
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"part must be request or response"}`))
+			return nil
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Content-Disposition",
+			fmt.Sprintf("attachment; filename=%q", parts[0]+"-"+parts[1]+"-"+part+".log"))
+		_, _ = w.Write(raw)
+		return nil
+	}
 	return json.NewEncoder(w).Encode(e)
 }
 

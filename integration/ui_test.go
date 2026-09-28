@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/caddyserver/caddy/v2/caddytest"
 
@@ -75,6 +76,86 @@ func TestTraceUIRoute(t *testing.T) {
 	resp3.Body.Close()
 	if resp3.StatusCode != 200 || !strings.HasPrefix(strings.TrimSpace(string(lb)), "[") {
 		t.Errorf("list = %d %s", resp3.StatusCode, lb)
+	}
+}
+
+// TestTracePartDownload: ?part=request|response serves one direction's raw
+// bytes as an attachment.
+func TestTracePartDownload(t *testing.T) {
+	cfg := jsonConfig(
+		map[string]any{
+			"match": []any{map[string]any{"path": []string{"/llm/traces*"}}},
+			"handle": []any{
+				map[string]any{"handler": "rewrite", "strip_path_prefix": "/llm/traces"},
+				map[string]any{"handler": "llm_tracer_api"},
+			},
+		},
+		map[string]any{
+			"match": []any{map[string]any{"path": []string{"/v1/messages"}}},
+			"handle": []any{
+				map[string]any{"handler": "trace", "trace_name": "stub"},
+				map[string]any{"handler": "static_response", "status_code": 200, "body": "pong"},
+			},
+		},
+	)
+	cfg = strings.Replace(cfg, `"apps":{"http"`, `"apps":{"llm_tracer":{"dir":"`+t.TempDir()+`"},"http"`, 1)
+
+	tester := caddytest.NewTester(t).WithDefaultOverrides(caddytest.Config{AdminPort: testPorts[1]})
+	tester.InitServer(cfg, "json")
+
+	// One traced request.
+	post, err := http.Post(httpBase()+"/v1/messages", "application/json", strings.NewReader(`{"model":"m","messages":[]}`))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	post.Body.Close()
+	traceID := post.Header.Get("X-LLM-Trace-ID")
+	if traceID == "" {
+		t.Fatal("missing X-LLM-Trace-ID")
+	}
+
+	// Wait for the record, then download both parts.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		resp, err := http.Get(httpBase() + "/llm/traces/" + traceID + "/stub?part=request")
+		if err != nil {
+			t.Fatalf("get part: %v", err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode == 200 {
+			if cd := resp.Header.Get("Content-Disposition"); !strings.Contains(cd, "attachment") || !strings.Contains(cd, traceID+"-stub-request.log") {
+				t.Errorf("Content-Disposition = %q", cd)
+			}
+			if !strings.Contains(string(body), `{"model":"m"`) {
+				t.Errorf("request part = %q", body)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("request part never available: %d %s", resp.StatusCode, body)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	resp, err := http.Get(httpBase() + "/llm/traces/" + traceID + "/stub?part=response")
+	if err != nil {
+		t.Fatalf("get part: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || !strings.HasSuffix(string(body), "pong") {
+		t.Errorf("response part = %d %q", resp.StatusCode, body)
+	}
+
+	// Bogus part rejected.
+	resp2, err := http.Get(httpBase() + "/llm/traces/" + traceID + "/stub?part=bogus")
+	if err != nil {
+		t.Fatalf("get bogus: %v", err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusNotFound {
+		t.Errorf("bogus part status = %d", resp2.StatusCode)
 	}
 }
 

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { DownloadIcon } from 'lucide-react'
-import { decodeBase64, fetchTrace, type RequestDetail } from '@/api'
+import { decodeBase64, fetchTrace, tracePartURL, type RequestDetail } from '@/api'
 import { assembleSSE } from '@/lib/assemble'
 import { YamlBlock } from '@/lib/yaml'
 import { Badge } from '@/components/ui/badge'
@@ -16,8 +16,8 @@ import {
 // BodyView renders a message body pretty (YAML-ish) by default with a
 // pretty/raw toggle: SSE streams are first assembled into one message,
 // JSON bodies rendered directly. Bodies that are neither show raw only.
-// Every body gets a download button (raw bytes) next to the toggle.
-function BodyView({ body, downloadName }: { body: string; downloadName: string }) {
+// Every body gets a download link (the raw-bytes URL) next to the toggle.
+function BodyView({ body, traceID, name, part }: { body: string; traceID: string; name: string; part: 'request' | 'response' }) {
   const trimmed = body.trim()
   const isSSE = trimmed.startsWith('event:') || trimmed.startsWith('data:')
   const assembled = isSSE ? assembleSSE(trimmed) : null
@@ -34,15 +34,7 @@ function BodyView({ body, downloadName }: { body: string; downloadName: string }
   }
 
   const [raw, setRaw] = useState(false)
-
-  const download = () => {
-    const url = URL.createObjectURL(new Blob([body], { type: 'text/plain;charset=utf-8' }))
-    const a = document.createElement('a')
-    a.href = url
-    a.download = downloadName
-    a.click()
-    URL.revokeObjectURL(url)
-  }
+  const filename = `${traceID}-${name}-${part}.log`
 
   const seg = (active: boolean) =>
     `px-2 py-0.5 ${active ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'}`
@@ -60,13 +52,14 @@ function BodyView({ body, downloadName }: { body: string; downloadName: string }
           </>
         )}
         <div className="ml-auto flex items-center gap-2">
-          <button
+          <a
             className="text-muted-foreground hover:text-foreground"
-            title={`Download ${downloadName}`}
-            onClick={download}
+            title={`Download ${filename}`}
+            href={tracePartURL(traceID, name, part)}
+            download={filename}
           >
             <DownloadIcon size={14} />
-          </button>
+          </a>
           {pretty !== null && (
             <div className="flex overflow-hidden rounded-md border text-xs">
               <button className={seg(!raw)} onClick={() => setRaw(false)}>
@@ -89,8 +82,20 @@ function BodyView({ body, downloadName }: { body: string; downloadName: string }
 }
 
 // HttpSection is one direction of the exchange: headers verbatim, body
-// pretty-rendered (YAML-ish) with a raw toggle and a download button.
-function HttpSection({ title, raw, downloadName }: { title: string; raw: string; downloadName: string }) {
+// pretty-rendered (YAML-ish) with a raw toggle and a download link.
+function HttpSection({
+  title,
+  raw,
+  traceID,
+  name,
+  part,
+}: {
+  title: string
+  raw: string
+  traceID: string
+  name: string
+  part: 'request' | 'response'
+}) {
   const [open, setOpen] = useState(true)
   const sep = raw.indexOf('\r\n\r\n')
   const head = sep >= 0 ? raw.slice(0, sep) : raw
@@ -112,7 +117,9 @@ function HttpSection({ title, raw, downloadName }: { title: string; raw: string;
           {/* Head and body scroll independently: long header blocks must
               not squeeze the body out of the section. */}
           <pre className="max-h-40 overflow-auto border-b bg-muted/60 p-3 text-xs whitespace-pre-wrap break-all">{head}</pre>
-          <div className="max-h-[45vh] overflow-auto">{body && <BodyView body={body} downloadName={downloadName} />}</div>
+          <div className="max-h-[45vh] overflow-auto">
+            {body && <BodyView body={body} traceID={traceID} name={name} part={part} />}
+          </div>
         </div>
       )}
     </div>
@@ -156,12 +163,16 @@ export function TraceDialog({
             <HttpSection
               title="REQUEST"
               raw={decodeBase64(data.request_raw)}
-              downloadName={`${detail.traceID}-${detail.name}-request.log`}
+              traceID={detail.traceID}
+              name={detail.name}
+              part="request"
             />
             <HttpSection
               title="RESPONSE"
               raw={decodeBase64(data.response_raw)}
-              downloadName={`${detail.traceID}-${detail.name}-response.log`}
+              traceID={detail.traceID}
+              name={detail.name}
+              part="response"
             />
           </div>
         )}

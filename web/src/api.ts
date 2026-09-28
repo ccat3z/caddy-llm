@@ -74,3 +74,9 @@ export function decodeBase64(b64?: string): string {
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
   return new TextDecoder().decode(bytes)
 }
+
+// tracePartURL is the direct download URL for one direction's raw message
+// (linkable — the UI anchors it so right-click "copy link" works).
+export function tracePartURL(traceID: string, name: string, part: 'request' | 'response'): string {
+  return `${BASE}/${traceID}/${name}?part=${part}`
+}
