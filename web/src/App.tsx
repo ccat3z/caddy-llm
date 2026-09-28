@@ -71,6 +71,7 @@ function App() {
         traceName={traceName}
         interval={interval}
         rangeHours={rangeHours}
+        refreshKey={refreshKey}
         onInterval={setInterval_}
       />
 

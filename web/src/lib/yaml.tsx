@@ -136,7 +136,7 @@ const foldCls = 'ml-2 cursor-pointer select-none text-sky-600 hover:underline'
 
 function YamlLine({ tokens, suffix }: { tokens: YamlToken[]; suffix?: ReactNode }) {
   return (
-    <div className="whitespace-pre-wrap">
+    <div className="whitespace-pre-wrap break-all">
       {tokens.map((tok, i) => {
         switch (tok.type) {
           case 'indent':

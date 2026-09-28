@@ -33,7 +33,7 @@ function BodyView({ body }: { body: string }) {
 
   const [raw, setRaw] = useState(false)
   if (pretty === null) {
-    return <pre className="p-3 text-xs whitespace-pre-wrap">{body}</pre>
+    return <pre className="p-3 text-xs whitespace-pre-wrap break-all">{body}</pre>
   }
   const seg = (active: boolean) =>
     `px-2 py-0.5 ${active ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'}`
@@ -60,7 +60,7 @@ function BodyView({ body }: { body: string }) {
         </div>
       </div>
       {raw ? (
-        <pre className="p-3 text-xs whitespace-pre-wrap">{body}</pre>
+        <pre className="p-3 text-xs whitespace-pre-wrap break-all">{body}</pre>
       ) : (
         <YamlBlock value={pretty} />
       )}
@@ -91,7 +91,7 @@ function HttpSection({ title, raw }: { title: string; raw: string }) {
         <div className="border-t">
           {/* Head and body scroll independently: long header blocks must
               not squeeze the body out of the section. */}
-          <pre className="max-h-40 overflow-auto border-b bg-muted/60 p-3 text-xs whitespace-pre-wrap">{head}</pre>
+          <pre className="max-h-40 overflow-auto border-b bg-muted/60 p-3 text-xs whitespace-pre-wrap break-all">{head}</pre>
           <div className="max-h-[45vh] overflow-auto">{body && <BodyView body={body} />}</div>
         </div>
       )}

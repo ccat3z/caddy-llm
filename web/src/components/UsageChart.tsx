@@ -23,6 +23,7 @@ interface Props {
   traceName: string
   interval: number // seconds
   rangeHours: number
+  refreshKey: number
   onInterval: (sec: number) => void
 }
 
@@ -52,7 +53,7 @@ function bucketLabel(startMs: number, intervalSec: number): string {
   return `${hm(s)} – ${hm(e)}`
 }
 
-export function UsageChart({ traceName, interval, rangeHours, onInterval }: Props) {
+export function UsageChart({ traceName, interval, rangeHours, refreshKey, onInterval }: Props) {
   const [buckets, setBuckets] = useState<UsageBucket[]>([])
   const [error, setError] = useState<string>('')
   const [loading, setLoading] = useState(false)
@@ -76,7 +77,7 @@ export function UsageChart({ traceName, interval, rangeHours, onInterval }: Prop
     return () => {
       cancelled = true
     }
-  }, [traceName, interval, rangeHours])
+  }, [traceName, interval, rangeHours, refreshKey])
 
   // Fill empty buckets: the API omits them, the chart shows every slot in
   // the range (bucket edges are interval-aligned to the unix epoch, same as
