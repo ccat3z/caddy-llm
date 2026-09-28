@@ -53,6 +53,31 @@ function bucketLabel(startMs: number, intervalSec: number): string {
   return `${hm(s)} – ${hm(e)}`
 }
 
+// BucketTick renders the start–end range on two lines so ticks stay
+// horizontal (no rotation, no clipping) even when dense. recharts passes
+// the tick's x/y and the category value in payload.
+function BucketTick(props: { x: number; y: number; payload: { value: number }; interval: number }) {
+  const { x, y, payload, interval } = props
+  const s = new Date(payload.value)
+  const e = new Date(payload.value + interval * 1000)
+  const sameDay = s.getDate() === e.getDate() && interval < 86400
+  const [l1, l2] = sameDay
+    ? [hm(s), `– ${hm(e)}`]
+    : [`${md(s)} ${hm(s)}`, `– ${md(e)} ${hm(e)}`]
+  return (
+    <g transform={`translate(${x},${y})`}>
+      <text textAnchor="middle" fontSize={10} fill="currentColor">
+        <tspan x="0" dy="10">
+          {l1}
+        </tspan>
+        <tspan x="0" dy="13">
+          {l2}
+        </tspan>
+      </text>
+    </g>
+  )
+}
+
 export function UsageChart({ traceName, interval, rangeHours, refreshKey, onInterval }: Props) {
   const [buckets, setBuckets] = useState<UsageBucket[]>([])
   const [error, setError] = useState<string>('')
@@ -154,11 +179,21 @@ export function UsageChart({ traceName, interval, rangeHours, refreshKey, onInte
           <ResponsiveContainer width="100%" height={260}>
             <BarChart data={data} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" vertical={false} />
+              {/* interval=0: never auto-hide ticks; the two-line custom
+                  tick keeps even dense series horizontal. */}
               <XAxis
                 dataKey="t"
+                interval={0}
                 tickLine={false}
-                fontSize={10}
-                tickFormatter={(t: number) => bucketLabel(t, interval)}
+                height={44}
+                tick={(props) => (
+                  <BucketTick
+                    x={props.x as number}
+                    y={props.y as number}
+                    payload={props.payload as { value: number }}
+                    interval={interval}
+                  />
+                )}
               />
               <YAxis tickFormatter={fmtTokens} tickLine={false} axisLine={false} fontSize={11} width={48} />
               <Tooltip
