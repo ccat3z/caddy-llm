@@ -123,9 +123,9 @@ type UsageBucket struct {
 
 // Query filters a List call.
 type Query struct {
-	Name   string
-	Limit  int
-	Offset int
+	TraceName string
+	Limit     int
+	Offset    int
 }
 
 // storage persists and queries traced exchanges. Raw message bytes are
@@ -147,9 +147,9 @@ type storage interface {
 	Get(ctx context.Context, traceID, name string) (*RequestDetail, error)
 
 	// UsageSeries aggregates token usage into time buckets of interval
-	// seconds, optionally filtered by stage and time range (zero times =
+	// seconds, optionally filtered by trace name and time range (zero times =
 	// unbounded).
-	UsageSeries(ctx context.Context, intervalSec int64, from, to time.Time, stage string) ([]UsageBucket, error)
+	UsageSeries(ctx context.Context, intervalSec int64, from, to time.Time, traceName string) ([]UsageBucket, error)
 }
 
 // ---------- raw file + sqlite index implementation ----------
@@ -357,9 +357,9 @@ func (s *rawStore) List(_ context.Context, q Query) ([]RequestSummary, error) {
 
 	query := `SELECT ` + summaryColumns + ` FROM llm_requests`
 	args := []any{}
-	if q.Name != "" {
+	if q.TraceName != "" {
 		query += ` WHERE trace_name = ?`
-		args = append(args, q.Name)
+		args = append(args, q.TraceName)
 	}
 	query += ` ORDER BY id DESC`
 	if q.Limit > 0 {
@@ -437,7 +437,7 @@ func (s *rawStore) Get(_ context.Context, traceID, name string) (*RequestDetail,
 // UsageSeries implements storage. Bucketing happens in SQL on unix seconds
 // (strftime parses the RFC3339 ts), so bucket edges are interval-aligned and
 // empty buckets are simply absent.
-func (s *rawStore) UsageSeries(_ context.Context, intervalSec int64, from, to time.Time, stage string) ([]UsageBucket, error) {
+func (s *rawStore) UsageSeries(_ context.Context, intervalSec int64, from, to time.Time, traceName string) ([]UsageBucket, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if intervalSec <= 0 {
@@ -447,9 +447,9 @@ func (s *rawStore) UsageSeries(_ context.Context, intervalSec int64, from, to ti
 		where []string
 		args  []any
 	)
-	if stage != "" {
+	if traceName != "" {
 		where = append(where, `trace_name = ?`)
-		args = append(args, stage)
+		args = append(args, traceName)
 	}
 	if !from.IsZero() {
 		where = append(where, `ts >= ?`)
@@ -574,9 +574,9 @@ func (t *TraceAPI) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyh
 
 	if rest == "" {
 		q := Query{
-			Name:   r.URL.Query().Get("stage"),
-			Limit:  intQuery(r, "limit", 100),
-			Offset: intQuery(r, "offset", 0),
+			TraceName: r.URL.Query().Get("trace_name"),
+			Limit:     intQuery(r, "limit", 100),
+			Offset:    intQuery(r, "offset", 0),
 		}
 		entries, err := t.app.Storage().List(r.Context(), q)
 		if err != nil {
@@ -585,12 +585,12 @@ func (t *TraceAPI) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyh
 		return json.NewEncoder(w).Encode(entries)
 	}
 
-	// Usage time series: /usage?interval=1h&from=&to=&stage=
+	// Usage time series: /usage?interval=1h&from=&to=&trace_name=
 	if rest == "usage" {
 		interval := int64(durationQuery(r, "interval", time.Hour).Seconds())
 		from, _ := time.Parse(time.RFC3339, r.URL.Query().Get("from"))
 		to, _ := time.Parse(time.RFC3339, r.URL.Query().Get("to"))
-		buckets, err := t.app.Storage().UsageSeries(r.Context(), interval, from, to, r.URL.Query().Get("stage"))
+		buckets, err := t.app.Storage().UsageSeries(r.Context(), interval, from, to, r.URL.Query().Get("trace_name"))
 		if err != nil {
 			return err
 		}

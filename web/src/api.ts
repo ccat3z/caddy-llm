@@ -36,9 +36,9 @@ const BASE = (() => {
   return m && m[1] ? m[1] : '/llm/traces'
 })()
 
-export async function fetchTraces(stage: string, limit = 100): Promise<RequestSummary[]> {
+export async function fetchTraces(traceName: string, limit = 100): Promise<RequestSummary[]> {
   const q = new URLSearchParams({ limit: String(limit) })
-  if (stage) q.set('stage', stage)
+  if (traceName) q.set('trace_name', traceName)
   const r = await fetch(`${BASE}?${q}`)
   if (!r.ok) throw new Error(`list traces: ${r.status}`)
   return r.json()
@@ -52,14 +52,14 @@ export async function fetchTrace(traceID: string, name: string): Promise<Request
 
 export interface UsageParams {
   interval: string // Go duration ("5m", "1h") or bare seconds
-  stage?: string
+  traceName?: string
   from?: Date
   to?: Date
 }
 
 export async function fetchUsage(p: UsageParams): Promise<UsageBucket[]> {
   const q = new URLSearchParams({ interval: p.interval })
-  if (p.stage) q.set('stage', p.stage)
+  if (p.traceName) q.set('trace_name', p.traceName)
   if (p.from) q.set('from', p.from.toISOString())
   if (p.to) q.set('to', p.to.toISOString())
   const r = await fetch(`${BASE}/usage?${q}`)

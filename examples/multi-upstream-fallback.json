@@ -87,7 +87,7 @@
                           },
                           {
                             "handler": "trace",
-                            "stage": "glm",
+                            "trace_name": "glm",
                             "cache_in_input": true
                           },
                           {

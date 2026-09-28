@@ -170,7 +170,7 @@ func claudeUsage(raw json.RawMessage) *Usage {
 	return &Usage{Input: u.InputTokens, Cache: u.CacheReadInputTokens, Output: u.OutputTokens}
 }
 
-// normalize applies the stage's cache_in_input setting: when the upstream's
+// normalize applies the tracer's cache_in_input setting: when the upstream's
 // reported input already includes cache tokens, subtract them so the stored
 // triple is always independent.
 func (u *Usage) normalize(cacheInInput bool) *Usage {

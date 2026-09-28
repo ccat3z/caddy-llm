@@ -11,18 +11,18 @@ import {
 } from '@/components/ui/select'
 
 function App() {
-  const [stage, setStage] = useState('')
-  const [stages, setStages] = useState<string[]>([])
+  const [traceName, setTraceName] = useState('')
+  const [names, setNames] = useState<string[]>([])
   const [interval, setInterval_] = useState('5m')
   const [rangeHours, setRangeHours] = useState(1)
   const [refreshKey, setRefreshKey] = useState(0)
 
-  // Discover stage names from the unfiltered trace list.
+  // Discover trace names from the unfiltered trace list.
   useEffect(() => {
     fetchTraces('', 500)
       .then((entries) => {
-        const names = [...new Set((entries ?? []).map((e) => e.trace_name))].sort()
-        setStages(names)
+        const found = [...new Set((entries ?? []).map((e) => e.trace_name))].sort()
+        setNames(found)
       })
       .catch(() => {})
   }, [refreshKey])
@@ -39,13 +39,16 @@ function App() {
         <h1 className="text-lg font-semibold">caddy-llm traces</h1>
         <div className="flex items-center gap-3">
           <RangeButtons rangeHours={rangeHours} onRange={setRangeHours} />
-          <Select value={stage || '__all__'} onValueChange={(v) => setStage(!v || v === '__all__' ? '' : v)}>
+          <Select
+            value={traceName || '__all__'}
+            onValueChange={(v) => setTraceName(!v || v === '__all__' ? '' : v)}
+          >
             <SelectTrigger className="w-32">
-              <SelectValue>{stage === '' ? 'all stages' : stage}</SelectValue>
+              <SelectValue>{traceName === '' ? 'all names' : traceName}</SelectValue>
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="__all__">all stages</SelectItem>
-              {stages.map((s) => (
+              <SelectItem value="__all__">all names</SelectItem>
+              {names.map((s) => (
                 <SelectItem key={s} value={s}>
                   {s}
                 </SelectItem>
@@ -56,13 +59,13 @@ function App() {
       </header>
 
       <UsageChart
-        stage={stage}
+        traceName={traceName}
         interval={interval}
         rangeHours={rangeHours}
         onInterval={setInterval_}
       />
 
-      <RequestTable stage={stage} refreshKey={refreshKey} />
+      <RequestTable traceName={traceName} refreshKey={refreshKey} />
     </div>
   )
 }

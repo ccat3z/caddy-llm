@@ -31,7 +31,7 @@
               "handle": [
                 {
                   "handler": "trace",
-                  "stage": "claude"
+                  "trace_name": "claude"
                 },
                 {
                   "handler": "rewrite",
@@ -42,7 +42,7 @@
                 },
                 {
                   "handler": "trace",
-                  "stage": "openai",
+                  "trace_name": "openai",
                   "cache_in_input": true
                 },
                 {

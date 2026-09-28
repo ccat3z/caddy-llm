@@ -123,9 +123,9 @@ func claude2openaiHandler() map[string]any {
 	return map[string]any{"handler": "claude2openai"}
 }
 
-// traceHandler captures the exchange under a stage label.
-func traceHandler(stage string) map[string]any {
-	return map[string]any{"handler": "trace", "stage": stage}
+// traceHandler captures the exchange under a trace name.
+func traceHandler(name string) map[string]any {
+	return map[string]any{"handler": "trace", "trace_name": name}
 }
 
 // respondHandler answers with a fixed status/body (chain terminator).

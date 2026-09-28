@@ -60,10 +60,10 @@ func TestFullChainJSON(t *testing.T) {
 							map[string]any{
 								"match": []any{map[string]any{"path": []string{"/v1/messages"}}},
 								"handle": []any{
-									map[string]any{"handler": "trace", "stage": "claude"},
+									map[string]any{"handler": "trace", "trace_name": "claude"},
 									map[string]any{"handler": "rewrite", "uri": "/v1/chat/completions"},
 									map[string]any{"handler": "claude2openai"},
-									map[string]any{"handler": "trace", "stage": "openai"},
+									map[string]any{"handler": "trace", "trace_name": "openai"},
 									map[string]any{
 										"handler": "reverse_proxy",
 										"upstreams": []any{
@@ -144,7 +144,7 @@ func TestFullChainJSON(t *testing.T) {
 		json.Unmarshal(lb, &entries)
 		return entries
 	}
-	waitFor("both trace stages", func() bool {
+	waitFor("both tracers", func() bool {
 		n := 0
 		for _, e := range fetchList() {
 			if e["trace_id"] == traceID {
@@ -154,11 +154,11 @@ func TestFullChainJSON(t *testing.T) {
 		return n >= 2
 	})
 
-	// Full exchange via the API: replayable raw messages, one per stage.
-	getEntry := func(stage string) map[string]any {
-		gresp, err := http.Get(httpBase() + "/llm/traces/" + traceID + "/" + stage)
+	// Full exchange via the API: replayable raw messages, one per trace name.
+	getEntry := func(name string) map[string]any {
+		gresp, err := http.Get(httpBase() + "/llm/traces/" + traceID + "/" + name)
 		if err != nil {
-			t.Fatalf("get %s: %v", stage, err)
+			t.Fatalf("get %s: %v", name, err)
 		}
 		defer gresp.Body.Close()
 		gb, _ := io.ReadAll(gresp.Body)
@@ -176,14 +176,14 @@ func TestFullChainJSON(t *testing.T) {
 	}
 	claudeMsg := decodeRaw(getEntry("claude")["request_raw"])
 	if !strings.HasPrefix(claudeMsg, "POST /v1/messages HTTP/1.1\r\n") {
-		t.Errorf("claude stage request_raw = %q", claudeMsg[:40])
+		t.Errorf("claude trace request_raw = %q", claudeMsg[:40])
 	}
 	if !strings.Contains(claudeMsg, `"max_tokens":10`) || !strings.Contains(claudeMsg, `"content":"hi"`) {
-		t.Errorf("claude stage request body = %s", claudeMsg)
+		t.Errorf("claude trace request body = %s", claudeMsg)
 	}
 	openaiMsg := decodeRaw(getEntry("openai")["request_raw"])
 	if !strings.Contains(openaiMsg, `"stream":false`) {
-		t.Errorf("openai stage request_raw = %s", openaiMsg)
+		t.Errorf("openai trace request_raw = %s", openaiMsg)
 	}
 
 	// Persistence under the configured dir: SQLite index + raw history file.

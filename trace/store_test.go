@@ -102,8 +102,8 @@ func TestRawStoreRoundTrip(t *testing.T) {
 		t.Errorf("list = %+v", list)
 	}
 
-	// Stage filter.
-	list, err = s.List(ctx, Query{Name: "claude"})
+	// Trace-name filter.
+	list, err = s.List(ctx, Query{TraceName: "claude"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,7 +356,7 @@ func TestUsageColumns(t *testing.T) {
 
 	base := time.Date(2026, 9, 28, 10, 0, 0, 0, time.UTC)
 	recs := []struct {
-		id, stage string
+		id, name string
 		ts        time.Time
 		usage     *Usage
 	}{
@@ -366,7 +366,7 @@ func TestUsageColumns(t *testing.T) {
 		{"d", "mcli", base.Add(80 * time.Minute), nil}, // probe, no usage
 	}
 	for _, r := range recs {
-		if err := s.RecordRequest(ctx, r.id, r.stage, r.ts, 1, 200, 0, 0, r.usage); err != nil {
+		if err := s.RecordRequest(ctx, r.id, r.name, r.ts, 1, 200, 0, 0, r.usage); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -407,7 +407,7 @@ func TestUsageColumns(t *testing.T) {
 		t.Errorf("bucket[1] = %+v", buckets[1])
 	}
 
-	// 30-minute buckets split a/b; stage filter applies.
+	// 30-minute buckets split a/b; trace-name filter applies.
 	half, err := s.UsageSeries(ctx, 1800, time.Time{}, time.Time{}, "mcli")
 	if err != nil {
 		t.Fatal(err)

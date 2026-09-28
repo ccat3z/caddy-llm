@@ -20,13 +20,13 @@ import {
 import { Button } from '@/components/ui/button'
 
 export interface ChartControls {
-  stage: string
+  traceName: string
   interval: string
   rangeHours: number
 }
 
 interface Props {
-  stage: string
+  traceName: string
   interval: string
   rangeHours: number
   onInterval: (v: string) => void
@@ -53,7 +53,7 @@ const bucketLabel = (ts: string, interval: string) => {
   return interval.endsWith('h') || interval === '24h' ? `${day} ${hm}` : hm
 }
 
-export function UsageChart({ stage, interval, rangeHours, onInterval }: Props) {
+export function UsageChart({ traceName, interval, rangeHours, onInterval }: Props) {
   const [buckets, setBuckets] = useState<UsageBucket[]>([])
   const [error, setError] = useState<string>('')
   const [loading, setLoading] = useState(false)
@@ -63,7 +63,7 @@ export function UsageChart({ stage, interval, rangeHours, onInterval }: Props) {
     setLoading(true)
     fetchUsage({
       interval,
-      stage: stage || undefined,
+      traceName: traceName || undefined,
       from: new Date(Date.now() - rangeHours * 3600_000),
     })
       .then((b) => {
@@ -77,7 +77,7 @@ export function UsageChart({ stage, interval, rangeHours, onInterval }: Props) {
     return () => {
       cancelled = true
     }
-  }, [stage, interval, rangeHours])
+  }, [traceName, interval, rangeHours])
 
   const data = useMemo(
     () =>

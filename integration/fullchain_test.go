@@ -22,7 +22,7 @@ import (
 )
 
 // TestFullChain: listen -> llm_tracer(claude) -> claude2openai ->
-// llm_tracer(openai) -> reverse_proxy, then verify both trace stages were
+// llm_tracer(openai) -> reverse_proxy, then verify both tracers were
 // recorded via the traces API.
 func TestFullChain(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -87,7 +87,7 @@ func TestFullChain(t *testing.T) {
 		t.Errorf("stages = %v", stages)
 	}
 
-	// Full exchange bodies: claude stage saw Claude format, openai stage saw
+	// Full exchange bodies: claude trace saw Claude format, openai trace saw
 	// OpenAI format (raw replayable HTTP messages, base64 in JSON).
 	get := func(id string) map[string]any {
 		gresp, err := http.Get(httpBase() + "/llm/traces/" + id)
@@ -110,11 +110,11 @@ func TestFullChain(t *testing.T) {
 	}
 	claudeEntry := get(traceID + "/claude")
 	if cb := b64(claudeEntry["request_raw"]); !strings.HasPrefix(cb, "POST /v1/messages HTTP/1.1\r\n") || !strings.Contains(cb, `"max_tokens":10`) || !strings.Contains(cb, "\r\nHost: ") {
-		t.Errorf("claude stage request_raw = %s", cb)
+		t.Errorf("claude trace request_raw = %s", cb)
 	}
 	openaiEntry := get(traceID + "/openai")
 	if ob := b64(openaiEntry["request_raw"]); !strings.Contains(ob, `"stream":false`) {
-		t.Errorf("openai stage request_raw = %s", ob)
+		t.Errorf("openai trace request_raw = %s", ob)
 	}
 
 	// Persistence: SQLite index + raw history file under the configured dir.

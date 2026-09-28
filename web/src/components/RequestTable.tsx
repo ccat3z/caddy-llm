@@ -37,19 +37,19 @@ const fmtTime = (ts: string) => {
   ).padStart(2, '0')}`
 }
 
-export function RequestTable({ stage, refreshKey }: { stage: string; refreshKey: number }) {
+export function RequestTable({ traceName, refreshKey }: { traceName: string; refreshKey: number }) {
   const [entries, setEntries] = useState<RequestSummary[]>([])
   const [error, setError] = useState('')
   const [expanded, setExpanded] = useState<string>('')
 
   const load = useCallback(() => {
-    fetchTraces(stage)
+    fetchTraces(traceName)
       .then((e) => {
         setEntries(e ?? [])
         setError('')
       })
       .catch((e) => setError(String(e)))
-  }, [stage])
+  }, [traceName])
 
   useEffect(() => {
     load()
@@ -71,7 +71,7 @@ export function RequestTable({ stage, refreshKey }: { stage: string; refreshKey:
           <TableHeader>
             <TableRow>
               <TableHead className="w-24">Time</TableHead>
-              <TableHead className="w-24">Stage</TableHead>
+              <TableHead className="w-24">Name</TableHead>
               <TableHead className="w-20">Status</TableHead>
               <TableHead className="w-20 text-right">Duration</TableHead>
               <TableHead className="text-right">Input</TableHead>

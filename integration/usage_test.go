@@ -20,9 +20,9 @@ import (
 
 // TestTraceUsageStats: traced translation chain against a mock OpenAI
 // streaming upstream whose usage includes cache in prompt_tokens. The openai
-// stage is configured cache_in_input, so the store must hold the three
-// independent counts; the claude stage (native semantics) stores as-is.
-// The usage time-series endpoint aggregates both stages.
+// openai trace is configured cache_in_input, so the store must hold the three
+// independent counts; the claude trace (native semantics) stores as-is.
+// The usage time-series endpoint aggregates both tracers.
 func TestTraceUsageStats(t *testing.T) {
 	// OpenAI SSE: prompt_tokens 24277 includes cached 1024.
 	const openAIStream = `data: {"id":"cc","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"po"}}]}
@@ -60,10 +60,10 @@ data: [DONE]
 							map[string]any{
 								"match": []any{map[string]any{"path": []string{"/v1/messages"}}},
 								"handle": []any{
-									map[string]any{"handler": "trace", "stage": "claude"},
+									map[string]any{"handler": "trace", "trace_name": "claude"},
 									map[string]any{"handler": "rewrite", "uri": "/v1/chat/completions"},
 									map[string]any{"handler": "claude2openai"},
-									map[string]any{"handler": "trace", "stage": "openai", "cache_in_input": true},
+									map[string]any{"handler": "trace", "trace_name": "openai", "cache_in_input": true},
 									map[string]any{
 										"handler":    "reverse_proxy",
 										"upstreams":  []any{map[string]any{"dial": strings.TrimPrefix(upstream.URL, "http://")}},
@@ -100,7 +100,7 @@ data: [DONE]
 		t.Fatal("missing X-LLM-Trace-ID")
 	}
 
-	// Poll the API until both stages are recorded with usage.
+	// Poll the API until both tracers are recorded with usage.
 	fetchList := func() []map[string]any {
 		lresp, err := http.Get(httpBase() + "/llm/traces?limit=50")
 		if err != nil {
@@ -135,7 +135,7 @@ data: [DONE]
 		t.Fatalf("stages not recorded: claude=%v openai=%v", claudeStage, openaiStage)
 	}
 
-	// claude stage: translator normalized already (input excludes cache).
+	// claude trace: translator normalized already (input excludes cache).
 	// 24277 - 1024 = 23253.
 	if got := claudeStage["input_tokens"]; got != float64(23253) {
 		t.Errorf("claude input = %v, want 23253", got)
@@ -146,7 +146,7 @@ data: [DONE]
 	if got := claudeStage["output_tokens"]; got != float64(101) {
 		t.Errorf("claude output = %v, want 101", got)
 	}
-	// openai stage: reported prompt includes cache; cache_in_input subtracts.
+	// openai trace: reported prompt includes cache; cache_in_input subtracts.
 	if got := openaiStage["input_tokens"]; got != float64(23253) {
 		t.Errorf("openai input = %v, want 23253 (normalized)", got)
 	}
@@ -171,8 +171,8 @@ data: [DONE]
 	if buckets[0]["input_tokens"] != float64(2*23253) || buckets[0]["cache_tokens"] != float64(2*1024) {
 		t.Errorf("bucket = %s", ub)
 	}
-	// Stage filter isolates the openai stage.
-	uresp2, err := http.Get(httpBase() + "/llm/traces/usage?interval=30m&stage=openai")
+	// Trace-name filter isolates the openai trace.
+	uresp2, err := http.Get(httpBase() + "/llm/traces/usage?interval=30m&trace_name=openai")
 	if err != nil {
 		t.Fatalf("usage: %v", err)
 	}

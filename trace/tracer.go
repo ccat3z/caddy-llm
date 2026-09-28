@@ -27,7 +27,7 @@ func init() {
 	httpcaddyfile.RegisterDirectiveOrder("trace", httpcaddyfile.Before, "rewrite")
 }
 
-// traceIDVar carries the trace id between the tracer stages of one client
+// traceIDVar carries the trace id between the tracers of one client
 // request via caddyhttp vars — shared through the request context (llm_route
 // clones keep it), never leaked onto the wire.
 const traceIDVar = "llm_trace_id"
@@ -37,11 +37,12 @@ const TraceIDHeader = "X-LLM-Trace-ID"
 
 // Tracer records request/response exchanges to the trace store.
 type Tracer struct {
-	// Stage labels this tracer's position in the chain, e.g. "claude" or
-	// "openai".
-	Stage string `json:"stage,omitempty"`
+	// TraceName labels this tracer's position in the chain, e.g. "claude"
+	// or "openai". One client request may pass several tracers; they share
+	// the trace id and are told apart by this name.
+	TraceName string `json:"trace_name,omitempty"`
 
-	// CacheInInput says whether the usage reported at this stage counts
+	// CacheInInput says whether the usage reported at this point counts
 	// cache tokens inside input tokens (OpenAI-style prompt_tokens). When
 	// true the tracer subtracts cache from input so the store always holds
 	// three independent counts. Claude-native upstreams report
@@ -86,7 +87,7 @@ var _ caddyhttp.MiddlewareHandler = (*Tracer)(nil)
 func (t *Tracer) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 	start := time.Now()
 
-	// Correlate stages: the first tracer mints the ID; later tracers reuse it.
+	// Correlate tracers: the first tracer mints the ID; later tracers reuse it.
 	// The id travels in a request var (context-scoped, survives llm_route's
 	// clones) — not a header, so it never reaches upstreams.
 	traceID, _ := caddyhttp.GetVar(r.Context(), traceIDVar).(string)
@@ -116,7 +117,7 @@ func (t *Tracer) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 			}
 		}
 		head.WriteString("\r\n")
-		if err := s.Save(r.Context(), traceID, t.Stage, true, head.Bytes()); err != nil {
+		if err := s.Save(r.Context(), traceID, t.TraceName, true, head.Bytes()); err != nil {
 			t.logger.Error("save request head", zap.Error(err), zap.String("id", traceID))
 			s = nil // storage broken; skip further writes
 		}
@@ -142,14 +143,14 @@ func (t *Tracer) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 		}
 	}
 	if s != nil && len(body) > 0 {
-		if err := s.Save(r.Context(), traceID, t.Stage, true, body); err != nil {
+		if err := s.Save(r.Context(), traceID, t.TraceName, true, body); err != nil {
 			t.logger.Error("save request body", zap.Error(err), zap.String("id", traceID))
 			s = nil
 		}
 		reqBytes = len(body)
 	}
 
-	rw := &teeResponseWriter{ResponseWriter: w, tracer: t, traceID: traceID, stage: t.Stage, storage: s}
+	rw := &teeResponseWriter{ResponseWriter: w, tracer: t, traceID: traceID, name: t.TraceName, storage: s}
 	err := next.ServeHTTP(rw, r)
 
 	status := rw.status
@@ -158,7 +159,7 @@ func (t *Tracer) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 	}
 	if s != nil {
 		usage := extractUsage(rw.tail.buf).normalize(t.CacheInInput)
-		if rerr := s.RecordRequest(r.Context(), traceID, t.Stage, start.UTC(),
+		if rerr := s.RecordRequest(r.Context(), traceID, t.TraceName, start.UTC(),
 			int(time.Since(start).Milliseconds()), status, reqBytes, rw.written, usage); rerr != nil {
 			t.logger.Error("record request", zap.Error(rerr), zap.String("id", traceID))
 		}
@@ -176,7 +177,7 @@ type teeResponseWriter struct {
 
 	tracer    *Tracer
 	traceID   string
-	stage     string
+	name      string
 	storage   storage
 	headSaved bool
 	tail      tailBuffer // bounded tail of the body, for usage extraction
@@ -197,7 +198,7 @@ func (w *teeResponseWriter) WriteHeader(status int) {
 			}
 		}
 		head.WriteString("\r\n")
-		if err := w.storage.Save(nil, w.traceID, w.stage, false, head.Bytes()); err != nil {
+		if err := w.storage.Save(nil, w.traceID, w.name, false, head.Bytes()); err != nil {
 			w.tracer.logger.Error("save response head", zap.Error(err), zap.String("id", w.traceID))
 			w.storage = nil
 		}
@@ -223,7 +224,7 @@ func (w *teeResponseWriter) Write(p []byte) (int, error) {
 	}
 	w.tail.Write(p)
 	if w.storage != nil {
-		if err := w.storage.Save(nil, w.traceID, w.stage, false, p); err != nil {
+		if err := w.storage.Save(nil, w.traceID, w.name, false, p); err != nil {
 			w.tracer.logger.Error("save response chunk", zap.Error(err), zap.String("id", w.traceID))
 			w.storage = nil // stop tracing, keep proxying
 		}
@@ -254,7 +255,7 @@ func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error)
 		if !h.NextArg() {
 			return nil, h.ArgErr()
 		}
-		t.Stage = h.Val()
+		t.TraceName = h.Val()
 		if h.NextArg() {
 			return nil, h.ArgErr()
 		}
