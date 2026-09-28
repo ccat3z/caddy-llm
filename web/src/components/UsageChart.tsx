@@ -19,38 +19,37 @@ import {
 } from '@/components/ui/select'
 import { Button } from '@/components/ui/button'
 
-export interface ChartControls {
-  traceName: string
-  interval: string
-  rangeHours: number
-}
-
 interface Props {
   traceName: string
-  interval: string
+  interval: number // seconds
   rangeHours: number
-  onInterval: (v: string) => void
+  onInterval: (sec: number) => void
 }
 
-const INTERVALS: { value: string; label: string }[] = [
-  { value: '1m', label: '1 min' },
-  { value: '5m', label: '5 min' },
-  { value: '15m', label: '15 min' },
-  { value: '30m', label: '30 min' },
-  { value: '1h', label: '1 hour' },
-  { value: '6h', label: '6 hours' },
-  { value: '24h', label: '1 day' },
-]
+// Base interval options (seconds); the duration-derived default is merged
+// in when it isn't one of these.
+const INTERVALS: number[] = [60, 300, 900, 1800, 3600, 7200, 21600, 43200, 86400]
+
+const fmtInterval = (sec: number) => {
+  if (sec < 3600) return `${Math.round(sec / 60)} min`
+  if (sec < 86400) return `${Math.round(sec / 3600)} hours`
+  return `${Math.round(sec / 86400)} day`
+}
 
 const fmtTokens = (n: number) =>
   n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`
 
-const bucketLabel = (ts: string, interval: string) => {
-  const d = new Date(ts)
-  const day = `${d.getMonth() + 1}/${d.getDate()}`
-  const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
-  // Long intervals get a day label; short ones just the time.
-  return interval.endsWith('h') || interval === '24h' ? `${day} ${hm}` : hm
+const pad = (n: number) => String(n).padStart(2, '0')
+const hm = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}`
+const md = (d: Date) => `${d.getMonth() + 1}/${d.getDate()}`
+
+// Bucket label: start–end time of the bucket.
+function bucketLabel(startMs: number, intervalSec: number): string {
+  const s = new Date(startMs)
+  const e = new Date(startMs + intervalSec * 1000)
+  if (intervalSec >= 86400) return `${md(s)} ${hm(s)} – ${md(e)} ${hm(e)}`
+  if (s.getDate() !== e.getDate()) return `${md(s)} ${hm(s)} – ${md(e)} ${hm(e)}`
+  return `${hm(s)} – ${hm(e)}`
 }
 
 export function UsageChart({ traceName, interval, rangeHours, onInterval }: Props) {
@@ -79,14 +78,26 @@ export function UsageChart({ traceName, interval, rangeHours, onInterval }: Prop
     }
   }, [traceName, interval, rangeHours])
 
-  const data = useMemo(
-    () =>
-      buckets.map((b) => ({
-        ...b,
-        label: bucketLabel(b.timestamp, interval),
-      })),
-    [buckets, interval],
-  )
+  // Fill empty buckets: the API omits them, the chart shows every slot in
+  // the range (bucket edges are interval-aligned to the unix epoch, same as
+  // the SQL bucketing).
+  const data = useMemo(() => {
+    const ivMs = interval * 1000
+    const to = Date.now()
+    const from = to - rangeHours * 3600_000
+    const byStart = new Map(buckets.map((b) => [new Date(b.timestamp).getTime(), b]))
+    const out = []
+    for (let t = Math.floor(from / ivMs) * ivMs; t < to; t += ivMs) {
+      const b = byStart.get(t)
+      out.push({
+        input_tokens: b?.input_tokens ?? 0,
+        cache_tokens: b?.cache_tokens ?? 0,
+        output_tokens: b?.output_tokens ?? 0,
+        label: bucketLabel(t, interval),
+      })
+    }
+    return out
+  }, [buckets, interval, rangeHours])
 
   const totals = useMemo(
     () =>
@@ -101,6 +112,11 @@ export function UsageChart({ traceName, interval, rangeHours, onInterval }: Prop
     [buckets],
   )
 
+  const options = useMemo(
+    () => [...new Set([...INTERVALS, interval])].sort((a, b) => a - b),
+    [interval],
+  )
+
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
@@ -111,14 +127,14 @@ export function UsageChart({ traceName, interval, rangeHours, onInterval }: Prop
             {fmtTokens(totals.output)}
           </span>
         </CardTitle>
-        <Select value={interval} onValueChange={(v) => v && onInterval(v)}>
+        <Select value={String(interval)} onValueChange={(v) => v && onInterval(Number(v))}>
           <SelectTrigger className="w-28">
-            <SelectValue>{INTERVALS.find((i) => i.value === interval)?.label}</SelectValue>
+            <SelectValue>{fmtInterval(interval)}</SelectValue>
           </SelectTrigger>
           <SelectContent>
-            {INTERVALS.map((i) => (
-              <SelectItem key={i.value} value={i.value}>
-                {i.label}
+            {options.map((sec) => (
+              <SelectItem key={sec} value={String(sec)}>
+                {fmtInterval(sec)}
               </SelectItem>
             ))}
           </SelectContent>
@@ -126,20 +142,19 @@ export function UsageChart({ traceName, interval, rangeHours, onInterval }: Prop
       </CardHeader>
       <CardContent>
         {error && <p className="text-sm text-destructive">{error}</p>}
-        {!error && data.length === 0 && (
+        {!error && buckets.length === 0 && (
           <p className="py-16 text-center text-sm text-muted-foreground">
             {loading ? 'Loading…' : 'No usage in this range'}
           </p>
         )}
-        {data.length > 0 && (
+        {!error && buckets.length > 0 && (
           <ResponsiveContainer width="100%" height={260}>
             <BarChart data={data} margin={{ top: 8, right: 8, left: 8, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" vertical={false} />
-              <XAxis dataKey="label" tickLine={false} fontSize={11} />
+              <XAxis dataKey="label" tickLine={false} fontSize={10} />
               <YAxis tickFormatter={fmtTokens} tickLine={false} axisLine={false} fontSize={11} width={48} />
               <Tooltip
                 formatter={(value, name) => [fmtTokens(Number(value ?? 0)), String(name)]}
-                labelFormatter={(label) => `bucket: ${label}`}
               />
               <Bar dataKey="input_tokens" name="input" stackId="t" fill="#0ea5e9" />
               <Bar dataKey="cache_tokens" name="cache" stackId="t" fill="#f59e0b" />

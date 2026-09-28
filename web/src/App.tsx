@@ -10,11 +10,15 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 
+// Interval defaults to duration / 12 (seconds) and resets whenever the
+// duration changes.
+const defaultInterval = (rangeHours: number) => (rangeHours * 3600) / 12
+
 function App() {
   const [traceName, setTraceName] = useState('')
   const [names, setNames] = useState<string[]>([])
-  const [interval, setInterval_] = useState('5m')
-  const [rangeHours, setRangeHours] = useState(1)
+  const [rangeHours, setRangeHours] = useState(24)
+  const [interval, setInterval_] = useState(defaultInterval(24))
   const [refreshKey, setRefreshKey] = useState(0)
 
   // Discover trace names from the unfiltered trace list.
@@ -33,21 +37,26 @@ function App() {
     return () => clearInterval(t)
   }, [])
 
+  const onRange = (h: number) => {
+    setRangeHours(h)
+    setInterval_(defaultInterval(h))
+  }
+
   return (
     <div className="mx-auto max-w-6xl space-y-4 p-6">
       <header className="flex items-center justify-between">
         <h1 className="text-lg font-semibold">caddy-llm traces</h1>
         <div className="flex items-center gap-3">
-          <RangeButtons rangeHours={rangeHours} onRange={setRangeHours} />
+          <RangeButtons rangeHours={rangeHours} onRange={onRange} />
           <Select
             value={traceName || '__all__'}
             onValueChange={(v) => setTraceName(!v || v === '__all__' ? '' : v)}
           >
             <SelectTrigger className="w-32">
-              <SelectValue>{traceName === '' ? 'all names' : traceName}</SelectValue>
+              <SelectValue>{traceName === '' ? '*' : traceName}</SelectValue>
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="__all__">all names</SelectItem>
+              <SelectItem value="__all__">*</SelectItem>
               {names.map((s) => (
                 <SelectItem key={s} value={s}>
                   {s}

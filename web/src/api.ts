@@ -51,14 +51,14 @@ export async function fetchTrace(traceID: string, name: string): Promise<Request
 }
 
 export interface UsageParams {
-  interval: string // Go duration ("5m", "1h") or bare seconds
+  interval: number // seconds
   traceName?: string
   from?: Date
   to?: Date
 }
 
 export async function fetchUsage(p: UsageParams): Promise<UsageBucket[]> {
-  const q = new URLSearchParams({ interval: p.interval })
+  const q = new URLSearchParams({ interval: String(p.interval) })
   if (p.traceName) q.set('trace_name', p.traceName)
   if (p.from) q.set('from', p.from.toISOString())
   if (p.to) q.set('to', p.to.toISOString())

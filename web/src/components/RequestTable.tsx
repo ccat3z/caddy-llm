@@ -1,7 +1,6 @@
-import { Fragment, useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { fetchTraces, type RequestSummary } from '@/api'
 import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
   Table,
@@ -11,7 +10,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { RequestDetail } from '@/components/RequestDetail'
+import { TraceDialog } from '@/components/TraceDialog'
 
 const fmtNum = (n?: number) => (n == null ? '—' : n.toLocaleString())
 
@@ -40,7 +39,7 @@ const fmtTime = (ts: string) => {
 export function RequestTable({ traceName, refreshKey }: { traceName: string; refreshKey: number }) {
   const [entries, setEntries] = useState<RequestSummary[]>([])
   const [error, setError] = useState('')
-  const [expanded, setExpanded] = useState<string>('')
+  const [selected, setSelected] = useState<{ traceID: string; name: string } | null>(null)
 
   const load = useCallback(() => {
     fetchTraces(traceName)
@@ -55,15 +54,10 @@ export function RequestTable({ traceName, refreshKey }: { traceName: string; ref
     load()
   }, [load, refreshKey])
 
-  const toggle = (key: string) => setExpanded((cur) => (cur === key ? '' : key))
-
   return (
     <Card>
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+      <CardHeader className="pb-2">
         <CardTitle className="text-base font-medium">Requests</CardTitle>
-        <Button size="sm" variant="outline" onClick={load}>
-          Refresh
-        </Button>
       </CardHeader>
       <CardContent>
         {error && <p className="text-sm text-destructive">{error}</p>}
@@ -71,12 +65,12 @@ export function RequestTable({ traceName, refreshKey }: { traceName: string; ref
           <TableHeader>
             <TableRow>
               <TableHead className="w-24">Time</TableHead>
-              <TableHead className="w-24">Name</TableHead>
+              <TableHead className="w-28">Trace Name</TableHead>
               <TableHead className="w-20">Status</TableHead>
               <TableHead className="w-20 text-right">Duration</TableHead>
-              <TableHead className="text-right">Input</TableHead>
-              <TableHead className="text-right">Cache</TableHead>
-              <TableHead className="text-right">Output</TableHead>
+              <TableHead className="text-right">Input Tokens</TableHead>
+              <TableHead className="text-right">Cache Tokens</TableHead>
+              <TableHead className="text-right">Output Tokens</TableHead>
               <TableHead className="text-right">Req/Resp</TableHead>
               <TableHead className="w-32">Trace</TableHead>
             </TableRow>
@@ -84,38 +78,32 @@ export function RequestTable({ traceName, refreshKey }: { traceName: string; ref
           <TableBody>
             {entries.map((e) => {
               const key = `${e.trace_id}/${e.trace_name}`
-              const open = expanded === key
               return (
-                <Fragment key={key}>
-                  <TableRow className="cursor-pointer" onClick={() => toggle(key)}>
-                    <TableCell className="font-mono text-xs">{fmtTime(e.timestamp)}</TableCell>
-                    <TableCell>
-                      <Badge variant="secondary">{e.trace_name}</Badge>
-                    </TableCell>
-                    <TableCell>
-                      <StatusBadge status={e.status} />
-                    </TableCell>
-                    <TableCell className="text-right text-xs">
-                      {e.duration_ms != null ? `${e.duration_ms}ms` : '—'}
-                    </TableCell>
-                    <TableCell className="text-right font-mono text-xs">{fmtNum(e.input_tokens)}</TableCell>
-                    <TableCell className="text-right font-mono text-xs">{fmtNum(e.cache_tokens)}</TableCell>
-                    <TableCell className="text-right font-mono text-xs">{fmtNum(e.output_tokens)}</TableCell>
-                    <TableCell className="text-right font-mono text-xs">
-                      {e.req_bytes}/{e.resp_bytes}
-                    </TableCell>
-                    <TableCell className="font-mono text-xs text-muted-foreground">
-                      {e.trace_id.slice(0, 12)}
-                    </TableCell>
-                  </TableRow>
-                  {open && (
-                    <TableRow>
-                      <TableCell colSpan={9} className="bg-muted/30 p-3">
-                        <RequestDetail traceID={e.trace_id} name={e.trace_name} />
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </Fragment>
+                <TableRow
+                  key={key}
+                  className="cursor-pointer"
+                  onClick={() => setSelected({ traceID: e.trace_id, name: e.trace_name })}
+                >
+                  <TableCell className="font-mono text-xs">{fmtTime(e.timestamp)}</TableCell>
+                  <TableCell>
+                    <Badge variant="secondary">{e.trace_name}</Badge>
+                  </TableCell>
+                  <TableCell>
+                    <StatusBadge status={e.status} />
+                  </TableCell>
+                  <TableCell className="text-right text-xs">
+                    {e.duration_ms != null ? `${e.duration_ms}ms` : '—'}
+                  </TableCell>
+                  <TableCell className="text-right font-mono text-xs">{fmtNum(e.input_tokens)}</TableCell>
+                  <TableCell className="text-right font-mono text-xs">{fmtNum(e.cache_tokens)}</TableCell>
+                  <TableCell className="text-right font-mono text-xs">{fmtNum(e.output_tokens)}</TableCell>
+                  <TableCell className="text-right font-mono text-xs">
+                    {e.req_bytes}/{e.resp_bytes}
+                  </TableCell>
+                  <TableCell className="font-mono text-xs text-muted-foreground">
+                    {e.trace_id.slice(0, 12)}
+                  </TableCell>
+                </TableRow>
               )
             })}
             {entries.length === 0 && !error && (
@@ -128,6 +116,7 @@ export function RequestTable({ traceName, refreshKey }: { traceName: string; ref
           </TableBody>
         </Table>
       </CardContent>
+      <TraceDialog detail={selected} onClose={() => setSelected(null)} />
     </Card>
   )
 }
