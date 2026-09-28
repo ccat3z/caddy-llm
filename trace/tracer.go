@@ -151,19 +151,23 @@ func (t *Tracer) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 	}
 
 	rw := &teeResponseWriter{ResponseWriter: w, tracer: t, traceID: traceID, name: t.TraceName, storage: s}
-	err := next.ServeHTTP(rw, r)
-
-	// rw.status stays 0 when nothing was ever written (aborted exchange —
-	// e.g. the client disconnected while the upstream was still thinking).
-	// Record it as 0 rather than inventing a 200 the client never saw.
-	if s != nil {
-		usage := extractUsage(rw.tail.buf).normalize(t.CacheInInput)
-		if rerr := s.RecordRequest(r.Context(), traceID, t.TraceName, start.UTC(),
-			int(time.Since(start).Milliseconds()), rw.status, reqBytes, rw.written, usage); rerr != nil {
-			t.logger.Error("record request", zap.Error(rerr), zap.String("id", traceID))
+	defer func() {
+		// Record in a defer: reverse_proxy panics with http.ErrAbortHandler
+		// when a response stream breaks mid-way (e.g. the client disconnects
+		// mid-SSE), unwinding past the code below — a mid-stream abort would
+		// otherwise vanish from the list entirely.
+		//
+		// rw.status stays 0 when nothing was ever written (aborted before the
+		// response started); record it as 0 rather than inventing a 200.
+		if s != nil {
+			usage := extractUsage(rw.tail.buf).normalize(t.CacheInInput)
+			if rerr := s.RecordRequest(r.Context(), traceID, t.TraceName, start.UTC(),
+				int(time.Since(start).Milliseconds()), rw.status, reqBytes, rw.written, usage); rerr != nil {
+				t.logger.Error("record request", zap.Error(rerr), zap.String("id", traceID))
+			}
 		}
-	}
-	return err
+	}()
+	return next.ServeHTTP(rw, r)
 }
 
 // teeResponseWriter passes response bytes through to the client while
