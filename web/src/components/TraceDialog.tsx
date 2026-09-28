@@ -12,24 +12,27 @@ import {
 
 // ---------- pretty body rendering ----------
 
-function PrettyBody({ body }: { body: string }) {
+// BodyView renders a message body pretty (YAML-ish) by default with a
+// pretty/raw toggle: SSE streams are first assembled into one message,
+// JSON bodies rendered directly. Bodies that are neither show raw only.
+function BodyView({ body }: { body: string }) {
   const trimmed = body.trim()
-  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+  const isSSE = trimmed.startsWith('event:') || trimmed.startsWith('data:')
+  const assembled = isSSE ? assembleSSE(trimmed) : null
+
+  let pretty: unknown = null
+  if (assembled) {
+    pretty = assembled.message
+  } else if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
     try {
-      return <YamlBlock value={JSON.parse(trimmed)} />
+      pretty = JSON.parse(trimmed)
     } catch {
       /* not JSON after all */
     }
   }
-  return <pre className="p-3 text-xs whitespace-pre-wrap">{body}</pre>
-}
 
-// SSEBody shows an assembled view of the event stream by default, with a
-// segmented assembled/raw toggle (like CPA's request log).
-function SSEBody({ body }: { body: string }) {
-  const assembled = assembleSSE(body)
   const [raw, setRaw] = useState(false)
-  if (!assembled) {
+  if (pretty === null) {
     return <pre className="p-3 text-xs whitespace-pre-wrap">{body}</pre>
   }
   const seg = (active: boolean) =>
@@ -37,15 +40,19 @@ function SSEBody({ body }: { body: string }) {
   return (
     <div>
       <div className="flex items-center gap-2 border-b bg-muted/40 px-3 py-1.5">
-        <Badge variant="secondary" className="text-xs">
-          {assembled.events} events
-        </Badge>
-        <Badge variant="outline" className="text-xs">
-          {assembled.format}
-        </Badge>
+        {assembled && (
+          <>
+            <Badge variant="secondary" className="text-xs">
+              {assembled.events} events
+            </Badge>
+            <Badge variant="outline" className="text-xs">
+              {assembled.format}
+            </Badge>
+          </>
+        )}
         <div className="ml-auto flex overflow-hidden rounded-md border text-xs">
           <button className={seg(!raw)} onClick={() => setRaw(false)}>
-            assembled
+            pretty
           </button>
           <button className={seg(raw)} onClick={() => setRaw(true)}>
             raw
@@ -55,20 +62,19 @@ function SSEBody({ body }: { body: string }) {
       {raw ? (
         <pre className="p-3 text-xs whitespace-pre-wrap">{body}</pre>
       ) : (
-        <YamlBlock value={assembled.message} />
+        <YamlBlock value={pretty} />
       )}
     </div>
   )
 }
 
 // HttpSection is one direction of the exchange: headers verbatim, body
-// pretty (JSON / SSE-assembled).
+// pretty-rendered (YAML-ish) with a raw toggle.
 function HttpSection({ title, raw }: { title: string; raw: string }) {
   const [open, setOpen] = useState(true)
   const sep = raw.indexOf('\r\n\r\n')
   const head = sep >= 0 ? raw.slice(0, sep) : raw
   const body = sep >= 0 ? raw.slice(sep + 4) : ''
-  const isSSE = body.trimStart().startsWith('event:') || body.trimStart().startsWith('data:')
 
   return (
     <div className="rounded-md border">
@@ -82,9 +88,11 @@ function HttpSection({ title, raw }: { title: string; raw: string }) {
         <span className="text-xs font-normal text-muted-foreground">{raw.length} B</span>
       </button>
       {open && (
-        <div className="max-h-[50vh] overflow-auto border-t">
-          <pre className="border-b bg-muted/60 p-3 text-xs whitespace-pre-wrap">{head}</pre>
-          {body && (isSSE ? <SSEBody body={body} /> : <PrettyBody body={body} />)}
+        <div className="border-t">
+          {/* Head and body scroll independently: long header blocks must
+              not squeeze the body out of the section. */}
+          <pre className="max-h-40 overflow-auto border-b bg-muted/60 p-3 text-xs whitespace-pre-wrap">{head}</pre>
+          <div className="max-h-[45vh] overflow-auto">{body && <BodyView body={body} />}</div>
         </div>
       )}
     </div>
