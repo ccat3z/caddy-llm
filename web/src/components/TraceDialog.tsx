@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { decodeBase64, fetchTrace, type RequestDetail } from '@/api'
 import { assembleSSE } from '@/lib/assemble'
+import { YamlBlock } from '@/lib/yaml'
 import { Badge } from '@/components/ui/badge'
 import {
   Dialog,
@@ -15,7 +16,7 @@ function PrettyBody({ body }: { body: string }) {
   const trimmed = body.trim()
   if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
     try {
-      return <pre className="p-3 text-xs whitespace-pre-wrap">{JSON.stringify(JSON.parse(trimmed), null, 2)}</pre>
+      return <YamlBlock value={JSON.parse(trimmed)} />
     } catch {
       /* not JSON after all */
     }
@@ -54,7 +55,7 @@ function SSEBody({ body }: { body: string }) {
       {raw ? (
         <pre className="p-3 text-xs whitespace-pre-wrap">{body}</pre>
       ) : (
-        <pre className="p-3 text-xs whitespace-pre-wrap">{JSON.stringify(assembled.message, null, 2)}</pre>
+        <YamlBlock value={assembled.message} />
       )}
     </div>
   )
