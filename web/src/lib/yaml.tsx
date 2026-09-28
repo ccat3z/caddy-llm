@@ -135,12 +135,18 @@ function needsQuote(s: string): boolean {
 const foldCls = 'ml-2 cursor-pointer select-none text-sky-600 hover:underline'
 
 function YamlLine({ tokens, suffix }: { tokens: YamlToken[]; suffix?: ReactNode }) {
+  // Indentation is left padding (in ch, the font is monospace), not text
+  // spaces — wrapped continuation lines keep the line's indent instead of
+  // falling back to column 0.
+  const indentTok = tokens[0]?.type === 'indent' ? (tokens[0] as { depth: number }) : null
+  const rest = indentTok ? tokens.slice(1) : tokens
   return (
-    <div className="whitespace-pre-wrap break-all">
-      {tokens.map((tok, i) => {
+    <div
+      className="whitespace-pre-wrap break-all"
+      style={indentTok ? { paddingLeft: `${indentTok.depth * 2}ch` } : undefined}
+    >
+      {rest.map((tok, i) => {
         switch (tok.type) {
-          case 'indent':
-            return <span key={i}>{'  '.repeat(tok.depth)}</span>
           case 'key':
             return (
               <span key={i} className="text-sky-700">
