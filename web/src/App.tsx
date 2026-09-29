@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { fetchTraces } from '@/api'
+import logo from '@/assets/logo.svg'
 import { RangeButtons, UsageChart } from '@/components/UsageChart'
 import { RequestTable } from '@/components/RequestTable'
 import {
@@ -45,7 +46,10 @@ function App() {
   return (
     <div className="mx-auto max-w-6xl space-y-4 p-6">
       <header className="flex items-center justify-between">
-        <h1 className="text-lg font-semibold">caddy-llm traces</h1>
+        <h1 className="flex items-center gap-2 text-lg font-semibold">
+          <img src={logo} alt="" className="h-7 w-7 rounded" />
+          caddy-llm traces
+        </h1>
         <div className="flex items-center gap-3">
           <RangeButtons rangeHours={rangeHours} onRange={onRange} />
           <Select
