@@ -159,6 +159,10 @@ type RequestSummary struct {
 	// progress when the process died, marked at store open). Empty means
 	// the exchange completed normally (possibly with an abort status).
 	State string `json:"state,omitempty"`
+	// Model is the request body's top-level "model" field (empty for
+	// non-LLM or malformed bodies, and while in progress — it's set when
+	// the row is finalized, like the other completion columns).
+	Model string `json:"model,omitempty"`
 	// Token accounting, normalized so the three are independent (input
 	// never includes cache). HasUsage is false for exchanges whose
 	// response carried no usage (errors, probes, truncated streams).
@@ -211,7 +215,7 @@ type storage interface {
 	// RecordRequest finalizes the row for a completed exchange (state
 	// completed). usage is nil when the response carried no token
 	// accounting. Falls back to an insert when StartRequest never ran.
-	RecordRequest(ctx context.Context, traceID, name string, ts time.Time, durMS, status, reqBytes, respBytes int, usage *Usage) error
+	RecordRequest(ctx context.Context, traceID, name string, ts time.Time, durMS, status, reqBytes, respBytes int, usage *Usage, model string) error
 
 	List(ctx context.Context, q Query) ([]RequestSummary, error)
 	Get(ctx context.Context, traceID, name string) (*RequestDetail, error)
@@ -388,6 +392,7 @@ CREATE TABLE IF NOT EXISTS llm_requests (
     status      INTEGER,
     req_bytes   INTEGER,
     resp_bytes  INTEGER,
+    model       TEXT,
     in_tokens   INTEGER,
     cache_tokens INTEGER,
     out_tokens  INTEGER,
@@ -403,6 +408,9 @@ CREATE INDEX IF NOT EXISTS idx_requests_name ON llm_requests(trace_name);`
 		if _, err := s.db.Exec(`ALTER TABLE llm_requests ADD COLUMN ` + col + ` INTEGER`); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return err
 		}
+	}
+	if _, err := s.db.Exec(`ALTER TABLE llm_requests ADD COLUMN model TEXT`); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+		return err
 	}
 	return nil
 }
@@ -505,7 +513,7 @@ func (s *rawStore) StartRequest(_ context.Context, traceID, name string, ts time
 }
 
 // RecordRequest implements storage.
-func (s *rawStore) RecordRequest(_ context.Context, traceID, name string, ts time.Time, durMS, status, reqBytes, respBytes int, usage *Usage) error {
+func (s *rawStore) RecordRequest(_ context.Context, traceID, name string, ts time.Time, durMS, status, reqBytes, respBytes int, usage *Usage, model string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var in, cache, out any
@@ -513,9 +521,9 @@ func (s *rawStore) RecordRequest(_ context.Context, traceID, name string, ts tim
 		in, cache, out = usage.Input, usage.Cache, usage.Output
 	}
 	res, err := s.db.Exec(
-		`UPDATE llm_requests SET dur_ms=?, status=?, req_bytes=?, resp_bytes=?, in_tokens=?, cache_tokens=?, out_tokens=?, done=?
+		`UPDATE llm_requests SET dur_ms=?, status=?, req_bytes=?, resp_bytes=?, model=?, in_tokens=?, cache_tokens=?, out_tokens=?, done=?
 		 WHERE trace_id=? AND trace_name=? AND done=?`,
-		durMS, status, reqBytes, respBytes, in, cache, out, doneCompleted,
+		durMS, status, reqBytes, respBytes, model, in, cache, out, doneCompleted,
 		traceID, name, doneInProgress)
 	if err != nil {
 		return err
@@ -526,23 +534,26 @@ func (s *rawStore) RecordRequest(_ context.Context, traceID, name string, ts tim
 	// StartRequest never ran (e.g. storage was broken at request start):
 	// fall back to a direct insert of the completed row.
 	_, err = s.db.Exec(
-		`INSERT INTO llm_requests (trace_id, trace_name, ts, dur_ms, status, req_bytes, resp_bytes, in_tokens, cache_tokens, out_tokens, done) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-		traceID, name, ts.UTC(), durMS, status, reqBytes, respBytes, in, cache, out, doneCompleted)
+		`INSERT INTO llm_requests (trace_id, trace_name, ts, dur_ms, status, req_bytes, resp_bytes, model, in_tokens, cache_tokens, out_tokens, done) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		traceID, name, ts.UTC(), durMS, status, reqBytes, respBytes, model, in, cache, out, doneCompleted)
 	return err
 }
 
 // summaryColumns is the SELECT projection shared by List and Get.
-const summaryColumns = `trace_id, trace_name, ts, dur_ms, status, req_bytes, resp_bytes, in_tokens, cache_tokens, out_tokens, done`
+const summaryColumns = `trace_id, trace_name, ts, dur_ms, status, req_bytes, resp_bytes, in_tokens, cache_tokens, out_tokens, done, model`
 
 // scanSummary scans one llm_requests row (summaryColumns order) into a
 // RequestSummary. Completion columns are NULL while in progress; NULL
 // token columns mean no usage was detected; NULL done
-// (pre-in-progress-tracking rows) means completed.
+// (pre-in-progress-tracking rows) means completed; NULL model means the
+// request body carried no model (or the row predates model tracking).
 func scanSummary(row interface{ Scan(...any) error }, r *RequestSummary) error {
 	var dur, status, reqB, respB, in, cache, out, done sql.NullInt64
-	if err := row.Scan(&r.TraceID, &r.TraceName, &r.Timestamp, &dur, &status, &reqB, &respB, &in, &cache, &out, &done); err != nil {
+	var model sql.NullString
+	if err := row.Scan(&r.TraceID, &r.TraceName, &r.Timestamp, &dur, &status, &reqB, &respB, &in, &cache, &out, &done, &model); err != nil {
 		return err
 	}
+	r.Model = model.String
 	r.DurationMS = dur.Int64
 	r.Status = int(status.Int64)
 	r.ReqBytes = int(reqB.Int64)

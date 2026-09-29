@@ -10,6 +10,7 @@ export interface RequestSummary {
   req_bytes: number
   resp_bytes: number
   state?: 'in_progress' | 'crashed'
+  model?: string
   input_tokens?: number
   cache_tokens?: number
   output_tokens?: number

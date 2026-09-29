@@ -62,13 +62,13 @@ func TestRawStoreRoundTrip(t *testing.T) {
 	if err := s.Save(ctx, "t1", "claude", false, []byte("event: b\n")); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RecordRequest(ctx, "t1", "claude", time.Now(), 42, 200, len(`{"a":1}`), 30, nil); err != nil {
+	if err := s.RecordRequest(ctx, "t1", "claude", time.Now(), 42, 200, len(`{"a":1}`), 30, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Save(ctx, "t2", "openai", true, reqMsg(`{"b":2}`)); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RecordRequest(ctx, "t2", "openai", time.Now(), 7, 200, len(`{"b":2}`), 0, nil); err != nil {
+	if err := s.RecordRequest(ctx, "t2", "openai", time.Now(), 7, 200, len(`{"b":2}`), 0, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -180,7 +180,7 @@ func TestRawStoreRotate(t *testing.T) {
 	if secondFile == firstFile {
 		t.Fatalf("no rotation: still %s", firstFile)
 	}
-	if err := s.RecordRequest(ctx, "t1", "glm", time.Now(), 1, 200, 0, len(big)+len("tail"), nil); err != nil {
+	if err := s.RecordRequest(ctx, "t1", "glm", time.Now(), 1, 200, 0, len(big)+len("tail"), nil, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -218,7 +218,7 @@ func TestRawStoreReopen(t *testing.T) {
 	if err := s.Save(ctx, "t1", "claude", false, []byte("hello")); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RecordRequest(ctx, "t1", "claude", time.Now(), 5, 200, 7, 5, nil); err != nil {
+	if err := s.RecordRequest(ctx, "t1", "claude", time.Now(), 5, 200, 7, 5, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.close(); err != nil {
@@ -250,7 +250,7 @@ func TestTraceAPIServeHTTP(t *testing.T) {
 	if err := s.Save(ctx, "t1", "claude", true, reqMsg(`abcdefg`)); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RecordRequest(ctx, "t1", "claude", time.Now(), 3, 200, 7, 0, nil); err != nil {
+	if err := s.RecordRequest(ctx, "t1", "claude", time.Now(), 3, 200, 7, 0, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	api := &TraceAPI{app: &Store{db: s}}
@@ -325,7 +325,7 @@ func TestRawStoreRotateConcurrentSegments(t *testing.T) {
 	if err := s.Save(ctx, "C", "glm", false, []byte("C-SECRET")); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RecordRequest(ctx, "B", "glm", time.Now(), 1, 200, 0, 0, nil); err != nil {
+	if err := s.RecordRequest(ctx, "B", "glm", time.Now(), 1, 200, 0, 0, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -366,7 +366,7 @@ func TestUsageColumns(t *testing.T) {
 		{"d", "mcli", base.Add(80 * time.Minute), nil}, // probe, no usage
 	}
 	for _, r := range recs {
-		if err := s.RecordRequest(ctx, r.id, r.name, r.ts, 1, 200, 0, 0, r.usage); err != nil {
+		if err := s.RecordRequest(ctx, r.id, r.name, r.ts, 1, 200, 0, 0, r.usage, ""); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -450,7 +450,7 @@ func TestInProgressLifecycle(t *testing.T) {
 	}
 
 	// Complete: same row updated, not duplicated.
-	if err := s.RecordRequest(ctx, "t1", "mcli", ts, 500, 200, 100, 200, &Usage{Input: 1, Cache: 2, Output: 3}); err != nil {
+	if err := s.RecordRequest(ctx, "t1", "mcli", ts, 500, 200, 100, 200, &Usage{Input: 1, Cache: 2, Output: 3}, "claude-x"); err != nil {
 		t.Fatal(err)
 	}
 	list, _ = s.List(ctx, Query{})
@@ -460,9 +460,12 @@ func TestInProgressLifecycle(t *testing.T) {
 	if list[0].State != "" || list[0].Status != 200 || list[0].DurationMS != 500 || list[0].InputTokens != 1 {
 		t.Errorf("after complete: %+v", list[0])
 	}
+	if list[0].Model != "claude-x" {
+		t.Errorf("model = %q, want claude-x", list[0].Model)
+	}
 
 	// RecordRequest without a preceding StartRequest falls back to insert.
-	if err := s.RecordRequest(ctx, "t2", "mcli", ts, 5, 200, 0, 0, nil); err != nil {
+	if err := s.RecordRequest(ctx, "t2", "mcli", ts, 5, 200, 0, 0, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	list, _ = s.List(ctx, Query{})
@@ -521,7 +524,7 @@ func TestCleanup(t *testing.T) {
 	if err := s.Save(ctx, "t", "mcli", false, []byte(strings.Repeat("y", 1000))); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RecordRequest(ctx, "t", "mcli", time.Now(), 1, 200, 0, 3000, nil); err != nil {
+	if err := s.RecordRequest(ctx, "t", "mcli", time.Now(), 1, 200, 0, 3000, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	filesBefore, _ := filepath.Glob(filepath.Join(dir, "history-*.raw"))

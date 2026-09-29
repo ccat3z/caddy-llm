@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -159,6 +160,18 @@ func (t *Tracer) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 		}
 		reqBytes = len(body)
 	}
+	// The model the client asked for — both OpenAI and Claude native put it
+	// at the top level of the JSON body. Best-effort: a non-JSON body just
+	// leaves it empty.
+	var model string
+	if len(body) > 0 {
+		var m struct {
+			Model string `json:"model"`
+		}
+		if json.Unmarshal(body, &m) == nil {
+			model = m.Model
+		}
+	}
 
 	rw := &teeResponseWriter{ResponseWriter: w, tracer: t, traceID: traceID, name: t.TraceName, storage: s}
 	defer func() {
@@ -172,7 +185,7 @@ func (t *Tracer) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 		if s != nil {
 			usage := extractUsage(rw.tail.buf).normalize(t.CacheInInput)
 			if rerr := s.RecordRequest(r.Context(), traceID, t.TraceName, start.UTC(),
-				int(time.Since(start).Milliseconds()), rw.status, reqBytes, rw.written, usage); rerr != nil {
+				int(time.Since(start).Milliseconds()), rw.status, reqBytes, rw.written, usage, model); rerr != nil {
 				t.logger.Error("record request", zap.Error(rerr), zap.String("id", traceID))
 			}
 		}

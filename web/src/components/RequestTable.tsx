@@ -102,6 +102,7 @@ export function RequestTable({ traceName, refreshKey }: { traceName: string; ref
             <TableRow>
               <TableHead className="w-24">Time</TableHead>
               <TableHead className="w-28">Trace Name</TableHead>
+              <TableHead>Model</TableHead>
               <TableHead className="w-20">Status</TableHead>
               <TableHead className="w-20 text-right">Duration</TableHead>
               <TableHead className="text-right">Input Tokens</TableHead>
@@ -124,6 +125,9 @@ export function RequestTable({ traceName, refreshKey }: { traceName: string; ref
                   <TableCell>
                     <Badge variant="secondary">{e.trace_name}</Badge>
                   </TableCell>
+                  <TableCell className="max-w-48 truncate font-mono text-xs" title={e.model}>
+                    {e.model || '—'}
+                  </TableCell>
                   <TableCell>
                     <StatusBadge status={e.status} state={e.state} />
                   </TableCell>
@@ -142,7 +146,7 @@ export function RequestTable({ traceName, refreshKey }: { traceName: string; ref
             })}
             {entries.length === 0 && !error && (
               <TableRow>
-                <TableCell colSpan={9} className="py-10 text-center text-sm text-muted-foreground">
+                <TableCell colSpan={10} className="py-10 text-center text-sm text-muted-foreground">
                   No requests recorded yet
                 </TableCell>
               </TableRow>
