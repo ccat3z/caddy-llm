@@ -37,8 +37,9 @@ func init() {
 // exchanges to rolling files with a SQLite index.
 type Store struct {
 	// Dir is the directory holding the raw history files and index.db.
-	// Required — the trace data is the point of running this app, so where
-	// it lives must be a deliberate choice, never a CWD accident.
+	// Default: "llm-tracer" inside caddy's data directory
+	// (caddy.AppDataDir(), e.g. ~/.local/share/caddy/llm-tracer) — the same
+	// convention the TLS assets follow.
 	Dir string `json:"dir,omitempty"`
 
 	logger *zap.Logger
@@ -57,7 +58,8 @@ func (Store) CaddyModule() caddy.ModuleInfo {
 func (a *Store) Provision(ctx caddy.Context) error {
 	a.logger = ctx.Logger()
 	if a.Dir == "" {
-		return fmt.Errorf(`llm_tracer requires a storage dir ("dir" in JSON, or the llm_tracer global option's argument in a Caddyfile)`)
+		a.Dir = filepath.Join(caddy.AppDataDir(), "llm-tracer")
+		a.logger.Info("llm_tracer: no dir configured, using caddy data dir", zap.String("dir", a.Dir))
 	}
 	return nil
 }

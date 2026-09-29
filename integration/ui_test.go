@@ -3,6 +3,8 @@ package integration
 import (
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -159,9 +161,18 @@ func TestTracePartDownload(t *testing.T) {
 	}
 }
 
-// TestTracerDirRequired: the llm_tracer app refuses to load without a
-// storage dir — no silent CWD default.
-func TestTracerDirRequired(t *testing.T) {
+// TestTracerDirDefault: without a configured dir, llm_tracer stores under
+// caddy's data directory ($XDG_DATA_HOME/caddy/llm-tracer).
+func TestTracerDirDefault(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", xdg)
+
 	cfg := strings.Replace(jsonConfig(), `"apps":{"http"`, `"apps":{"llm_tracer":{},"http"`, 1)
-	caddytest.AssertLoadError(t, cfg, "json", "requires a storage dir")
+	tester := caddytest.NewTester(t).WithDefaultOverrides(caddytest.Config{AdminPort: testPorts[1]})
+	tester.InitServer(cfg, "json")
+
+	want := filepath.Join(xdg, "caddy", "llm-tracer", "index.db")
+	if _, err := os.Stat(want); err != nil {
+		t.Fatalf("default store not created at %s: %v", want, err)
+	}
 }
