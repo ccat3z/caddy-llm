@@ -1,3 +1,4 @@
 /llm-traces/
 *.jsonl
 /caddy-llm
+/caddy-bin
