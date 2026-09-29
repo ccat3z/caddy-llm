@@ -8,10 +8,10 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
-# dist contents are build output; keep .gitkeep so go:embed works on a
-# fresh clone (a directory-level "dist" rule can't be negated inside).
-dist/*
-!dist/.gitkeep
+# dist is committed on purpose: xcaddy builds from the module/git tree,
+# which only contains committed files — the embedded UI needs dist present.
+# Rebuild and commit it whenever web/src changes (marked linguist-generated
+# so PR diffs stay folded).
 dist-ssr
 *.local
 

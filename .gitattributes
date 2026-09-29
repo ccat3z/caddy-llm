@@ -1,0 +1,3 @@
+# Vite build output is committed so xcaddy builds embed the UI; keep PR
+# diffs folded by marking it generated.
+web/dist/** linguist-generated

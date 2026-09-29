@@ -18,8 +18,8 @@ import (
 // sit in the second segment, so neither can collide with it.
 const uiPrefix = "ui/"
 
-// distFS is the embedded dashboard, or nil when web/dist was never built
-// (fresh clone; only the .gitkeep placeholder is embedded).
+// distFS is the embedded dashboard, or nil when web/dist holds no index.html
+// (dist is committed, so this only happens if it was deleted locally).
 var distFS = func() fs.FS {
 	sub, err := fs.Sub(webui.Dist, "dist")
 	if err != nil {
