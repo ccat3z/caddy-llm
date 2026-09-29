@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { fetchTraces, type RequestSummary } from '@/api'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
   Table,
@@ -51,19 +52,30 @@ const fmtTime = (ts: string) => {
   ).padStart(2, '0')}`
 }
 
+const PAGE_SIZE = 20
+
 export function RequestTable({ traceName, refreshKey }: { traceName: string; refreshKey: number }) {
   const [entries, setEntries] = useState<RequestSummary[]>([])
+  const [hasMore, setHasMore] = useState(false)
+  const [page, setPage] = useState(0)
   const [error, setError] = useState('')
   const [selected, setSelected] = useState<{ traceID: string; name: string } | null>(null)
 
+  // Back to page 1 when the filter changes.
+  useEffect(() => setPage(0), [traceName])
+
   const load = useCallback(() => {
-    fetchTraces(traceName)
-      .then((e) => {
-        setEntries(e ?? [])
+    // Fetch one extra row to know whether a next page exists (the API has
+    // no total count).
+    fetchTraces(traceName, PAGE_SIZE + 1, page * PAGE_SIZE)
+      .then((rows) => {
+        const e = rows ?? []
+        setHasMore(e.length > PAGE_SIZE)
+        setEntries(e.slice(0, PAGE_SIZE))
         setError('')
       })
       .catch((e) => setError(String(e)))
-  }, [traceName])
+  }, [traceName, page])
 
   useEffect(() => {
     load()
@@ -71,8 +83,17 @@ export function RequestTable({ traceName, refreshKey }: { traceName: string; ref
 
   return (
     <Card>
-      <CardHeader className="pb-2">
+      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
         <CardTitle className="text-base font-medium">Requests</CardTitle>
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Button size="sm" variant="outline" disabled={page === 0} onClick={() => setPage(page - 1)}>
+            Prev
+          </Button>
+          <span className="min-w-16 text-center">Page {page + 1}</span>
+          <Button size="sm" variant="outline" disabled={!hasMore} onClick={() => setPage(page + 1)}>
+            Next
+          </Button>
+        </div>
       </CardHeader>
       <CardContent>
         {error && <p className="text-sm text-destructive">{error}</p>}

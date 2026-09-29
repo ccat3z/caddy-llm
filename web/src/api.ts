@@ -37,8 +37,8 @@ const BASE = (() => {
   return m && m[1] ? m[1] : '/llm/traces'
 })()
 
-export async function fetchTraces(traceName: string, limit = 100): Promise<RequestSummary[]> {
-  const q = new URLSearchParams({ limit: String(limit) })
+export async function fetchTraces(traceName: string, limit = 100, offset = 0): Promise<RequestSummary[]> {
+  const q = new URLSearchParams({ limit: String(limit), offset: String(offset) })
   if (traceName) q.set('trace_name', traceName)
   const r = await fetch(`${BASE}?${q}`)
   if (!r.ok) throw new Error(`list traces: ${r.status}`)
