@@ -36,11 +36,11 @@ func TestFullChainJSON(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	traceDir := t.TempDir()
+	traceDir := useStoreDir(t)
 	cfg := map[string]any{
 		"admin": map[string]any{"listen": fmt.Sprintf("localhost:%d", testPorts[1])},
 		"apps": map[string]any{
-			"llm_tracer": map[string]any{"dir": traceDir},
+			"llm_tracer": map[string]any{},
 			"http": map[string]any{
 				"http_port": testPorts[0],
 				"servers": map[string]any{

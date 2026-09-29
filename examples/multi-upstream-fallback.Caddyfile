@@ -8,7 +8,7 @@
 	admin localhost:2019
 	http_port 8080
 
-	llm_tracer /var/lib/caddy/llm-traces
+	llm_tracer
 }
 
 http://:8080 {

@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"path/filepath"
 	"strings"
+	"testing"
 )
 
 // testPorts holds the per-process random ports tests listen on, so parallel
@@ -150,13 +152,23 @@ func handleRoute(handlers ...map[string]any) map[string]any {
 	return map[string]any{"handle": handlers}
 }
 
-// jsonConfigWithTracer builds the full-chain config: llm_tracer app storing
-// under dir, the translation chain for POST /v1/messages, and the traces API.
-func jsonConfigWithTracer(dir, upstreamURL string) string {
+// useStoreDir points XDG_DATA_HOME at a temp dir (the llm_tracer store
+// lands in caddy.AppDataDir()/llm-tracer under it) and returns that store
+// dir for assertions.
+func useStoreDir(t *testing.T) string {
+	t.Helper()
+	xdg := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", xdg)
+	return filepath.Join(xdg, "caddy", "llm-tracer")
+}
+
+// jsonConfigWithTracer builds the full-chain config: llm_tracer app, the
+// translation chain for POST /v1/messages, and the traces API.
+func jsonConfigWithTracer(upstreamURL string) string {
 	cfg := map[string]any{
 		"admin": map[string]any{"listen": fmt.Sprintf("localhost:%d", testPorts[1])},
 		"apps": map[string]any{
-			"llm_tracer": map[string]any{"dir": dir},
+			"llm_tracer": map[string]any{},
 			"http": map[string]any{
 				"http_port": testPorts[0],
 				"servers": map[string]any{

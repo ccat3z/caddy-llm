@@ -31,9 +31,9 @@ func TestFullChain(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	traceDir := t.TempDir()
+	traceDir := useStoreDir(t)
 	tester := caddytest.NewTester(t).WithDefaultOverrides(caddytest.Config{AdminPort: testPorts[1]})
-	tester.InitServer(jsonConfigWithTracer(traceDir, upstream.URL), "json")
+	tester.InitServer(jsonConfigWithTracer(upstream.URL), "json")
 
 	// Client request in Claude format.
 	resp, err := http.Post(httpBase()+"/v1/messages", "application/json",

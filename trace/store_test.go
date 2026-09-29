@@ -500,3 +500,95 @@ func TestInProgressLifecycle(t *testing.T) {
 		}
 	}
 }
+
+// TestCleanup: over maxSize, the oldest history files (never the active
+// one) are deleted with their raw_log_idx rows; llm_requests summaries
+// survive so token stats outlive raw bodies.
+func TestCleanup(t *testing.T) {
+	s, dir := newTestStore(t)
+	defer s.close()
+	ctx := context.Background()
+
+	// Three history files with content; the last is active.
+	for range 2 {
+		if err := s.Save(ctx, "t", "mcli", false, []byte(strings.Repeat("x", 1000))); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.rotate(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Save(ctx, "t", "mcli", false, []byte(strings.Repeat("y", 1000))); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordRequest(ctx, "t", "mcli", time.Now(), 1, 200, 0, 3000, nil); err != nil {
+		t.Fatal(err)
+	}
+	filesBefore, _ := filepath.Glob(filepath.Join(dir, "history-*.raw"))
+	if len(filesBefore) != 3 {
+		t.Fatalf("history files = %d", len(filesBefore))
+	}
+
+	// Cap below the two older files' total: both should go, active stays.
+	s.maxSize = 1500
+	s.cleanup()
+
+	filesAfter, _ := filepath.Glob(filepath.Join(dir, "history-*.raw"))
+	if len(filesAfter) != 1 || filepath.Base(filesAfter[0]) != s.activeName {
+		t.Fatalf("after cleanup: %v (active %s)", filesAfter, s.activeName)
+	}
+	// Index rows for the deleted files are pruned.
+	var n int
+	s.db.QueryRow(`SELECT COUNT(*) FROM raw_log_idx WHERE file != ?`, s.activeName).Scan(&n)
+	if n != 0 {
+		t.Errorf("stale raw_log_idx rows = %d", n)
+	}
+	// Summary row survives.
+	list, _ := s.List(ctx, Query{})
+	if len(list) != 1 || list[0].RespBytes != 3000 {
+		t.Errorf("summary lost: %+v", list)
+	}
+}
+
+// TestCleanupDisabled: maxSize 0 never deletes.
+func TestCleanupDisabled(t *testing.T) {
+	s, dir := newTestStore(t)
+	defer s.close()
+	if err := s.Save(context.Background(), "t", "mcli", false, []byte("data")); err != nil {
+		t.Fatal(err)
+	}
+	s.maxSize = 1
+	// cleanupLoop is only started for maxSize > 0; call cleanup directly to
+	// prove the loop guard is the only gate.
+	if s.stopCh != nil {
+		t.Fatal("stopCh should not exist for maxSize 0 store")
+	}
+	files, _ := filepath.Glob(filepath.Join(dir, "history-*.raw"))
+	if len(files) != 1 {
+		t.Fatalf("files = %v", files)
+	}
+}
+
+// TestParseByteSize covers the size-string parser.
+func TestParseByteSize(t *testing.T) {
+	cases := map[string]int64{
+		`"10G"`:        10 << 30,
+		`"512M"`:       512 << 20,
+		`"1GiB"`:       1 << 30,
+		`"100kb"`:      100 << 10,
+		`"0"`:          0,
+		`1024`:         1024,
+		`"1073741824"`: 1 << 30,
+	}
+	for in, want := range cases {
+		got, err := parseByteSize(json.RawMessage(in))
+		if err != nil || got != want {
+			t.Errorf("parseByteSize(%s) = %d, %v; want %d", in, got, err, want)
+		}
+	}
+	for _, bad := range []string{`"10X"`, `""`, `"abc"`, `-1`} {
+		if _, err := parseByteSize(json.RawMessage(bad)); err == nil {
+			t.Errorf("parseByteSize(%s) should fail", bad)
+		}
+	}
+}

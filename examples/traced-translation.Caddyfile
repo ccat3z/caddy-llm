@@ -10,7 +10,7 @@
 
 	# Trace persistence: raw replayable HTTP messages in rolling
 	# history-*.raw files plus a SQLite index.
-	llm_tracer /var/lib/caddy/llm-traces
+	llm_tracer
 }
 
 http://:8080 {

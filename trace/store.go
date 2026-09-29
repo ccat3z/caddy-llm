@@ -36,15 +36,21 @@ func init() {
 // Store is the tracer app: a caddy.App persisting raw, replayable HTTP
 // exchanges to rolling files with a SQLite index.
 type Store struct {
-	// Dir is the directory holding the raw history files and index.db.
-	// Default: "llm-tracer" inside caddy's data directory
-	// (caddy.AppDataDir(), e.g. ~/.local/share/caddy/llm-tracer) — the same
-	// convention the TLS assets follow.
-	Dir string `json:"dir,omitempty"`
+	// MaxSize caps the total size of the trace directory: when exceeded,
+	// the oldest history files are deleted (their raw_log_idx rows too;
+	// llm_requests summaries stay, so token stats survive). Accepts a byte
+	// count or a size string ("10G", "512M"); 0 disables cleanup.
+	// Default: 10G.
+	MaxSize json.RawMessage `json:"max_size,omitempty"`
 
-	logger *zap.Logger
-	db     *rawStore
+	logger  *zap.Logger
+	db      *rawStore
+	dir     string
+	maxSize int64
 }
+
+// defaultMaxSize is the cleanup threshold when max_size isn't configured.
+const defaultMaxSize = 10 << 30 // 10 GiB
 
 // CaddyModule returns the Caddy module information.
 func (Store) CaddyModule() caddy.ModuleInfo {
@@ -57,16 +63,66 @@ func (Store) CaddyModule() caddy.ModuleInfo {
 // Provision sets up the module.
 func (a *Store) Provision(ctx caddy.Context) error {
 	a.logger = ctx.Logger()
-	if a.Dir == "" {
-		a.Dir = filepath.Join(caddy.AppDataDir(), "llm-tracer")
-		a.logger.Info("llm_tracer: no dir configured, using caddy data dir", zap.String("dir", a.Dir))
+	a.dir = filepath.Join(caddy.AppDataDir(), "llm-tracer")
+	a.maxSize = defaultMaxSize
+	if len(a.MaxSize) > 0 {
+		ms, err := parseByteSize(a.MaxSize)
+		if err != nil {
+			return fmt.Errorf("max_size: %v", err)
+		}
+		a.maxSize = ms
 	}
 	return nil
 }
 
+// parseByteSize accepts a JSON string ("10G", "512M", "1GiB", case
+// insensitive) or a plain JSON number (bytes). Sizes are 1024-based.
+func parseByteSize(raw json.RawMessage) (int64, error) {
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		var n int64
+		if err := json.Unmarshal(raw, &n); err != nil {
+			return 0, fmt.Errorf("must be a size string or a byte count")
+		}
+		if n < 0 {
+			return 0, fmt.Errorf("must not be negative")
+		}
+		return n, nil
+	}
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, fmt.Errorf("empty size")
+	}
+	i := 0
+	for i < len(s) && (s[i] >= '0' && s[i] <= '9' || s[i] == '.') {
+		i++
+	}
+	num, err := strconv.ParseFloat(s[:i], 64)
+	if err != nil {
+		return 0, fmt.Errorf("bad size %q", s)
+	}
+	var mult float64 = 1
+	switch strings.ToUpper(strings.TrimSpace(s[i:])) {
+	case "", "B":
+	case "K", "KB", "KIB":
+		mult = 1 << 10
+	case "M", "MB", "MIB":
+		mult = 1 << 20
+	case "G", "GB", "GIB":
+		mult = 1 << 30
+	case "T", "TB", "TIB":
+		mult = 1 << 40
+	default:
+		return 0, fmt.Errorf("unknown size suffix in %q", s)
+	}
+	return int64(num * mult), nil
+}
+
 // Start opens the index database and a fresh history file.
 func (a *Store) Start() error {
-	a.db = newRawStore(a.Dir)
+	a.db = newRawStore(a.dir)
+	a.db.maxSize = a.maxSize
+	a.db.logger = a.logger
 	return a.db.open()
 }
 
@@ -191,6 +247,11 @@ type rawStore struct {
 	activeName string
 	// activeSize is its current byte size (tracked, not stat'ed).
 	activeSize int64
+
+	// maxSize caps the directory's total size; 0 disables cleanup.
+	maxSize int64
+	logger  *zap.Logger
+	stopCh  chan struct{}
 }
 
 // rawPiece locates one physical segment of a message.
@@ -229,7 +290,80 @@ func (s *rawStore) open() error {
 	if err := s.markStaleCrashed(); err != nil {
 		return err
 	}
-	return s.rotate() // open the first active file
+	if err := s.rotate(); err != nil { // open the first active file
+		return err
+	}
+	if s.maxSize > 0 {
+		s.stopCh = make(chan struct{})
+		go s.cleanupLoop()
+	}
+	return nil
+}
+
+// cleanupLoop enforces maxSize once at start and then every minute.
+func (s *rawStore) cleanupLoop() {
+	s.cleanup()
+	t := time.NewTicker(time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-s.stopCh:
+			return
+		case <-t.C:
+			s.cleanup()
+		}
+	}
+}
+
+// cleanup deletes the oldest history files (never the active one) until
+// the directory is under maxSize. Their raw_log_idx rows go with them;
+// llm_requests summaries are kept — token stats outlive raw bodies, and
+// Get already tolerates missing history files.
+func (s *rawStore) cleanup() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return
+	}
+	type hist struct {
+		name string
+		size int64
+	}
+	var (
+		files []hist
+		total int64
+	)
+	for _, e := range entries {
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		total += info.Size()
+		if strings.HasPrefix(e.Name(), "history-") {
+			files = append(files, hist{e.Name(), info.Size()})
+		}
+	}
+	// File names carry a nanosecond timestamp, so name order is age order.
+	for len(files) > 1 && total > s.maxSize {
+		oldest := files[0]
+		if oldest.name == s.activeName {
+			break
+		}
+		if err := os.Remove(filepath.Join(s.dir, oldest.name)); err != nil {
+			continue
+		}
+		if _, err := s.db.Exec(`DELETE FROM raw_log_idx WHERE file = ?`, oldest.name); err != nil && s.logger != nil {
+			s.logger.Warn("cleanup: prune index", zap.String("file", oldest.name), zap.Error(err))
+		}
+		if s.logger != nil {
+			s.logger.Info("cleanup: deleted history file",
+				zap.String("file", oldest.name), zap.Int64("size", oldest.size), zap.Int64("total_before", total))
+		}
+		total -= oldest.size
+		files = files[1:]
+	}
 }
 
 func (s *rawStore) createTables() error {
@@ -291,6 +425,10 @@ func (s *rawStore) markStaleCrashed() error {
 }
 
 func (s *rawStore) close() error {
+	if s.stopCh != nil {
+		close(s.stopCh)
+		s.stopCh = nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var firstErr error
@@ -742,15 +880,15 @@ func parseGlobalOption(d *caddyfile.Dispenser, _ any) (any, error) {
 	app := new(Store)
 	for d.Next() {
 		if d.NextArg() {
-			app.Dir = d.Val()
+			return nil, d.ArgErr()
 		}
 		for d.NextBlock(0) {
 			switch d.Val() {
-			case "dir":
+			case "max_size":
 				if !d.NextArg() {
 					return nil, d.ArgErr()
 				}
-				app.Dir = d.Val()
+				app.MaxSize = json.RawMessage(strconv.Quote(d.Val()))
 			default:
 				return nil, d.Errf("unknown subdirective %q", d.Val())
 			}

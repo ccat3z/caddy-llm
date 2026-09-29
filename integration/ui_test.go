@@ -31,7 +31,8 @@ func TestTraceUIRoute(t *testing.T) {
 			},
 		},
 	)
-	cfg = strings.Replace(cfg, `"apps":{"http"`, `"apps":{"llm_tracer":{"dir":"`+t.TempDir()+`"},"http"`, 1)
+	cfg = strings.Replace(cfg, `"apps":{"http"`, `"apps":{"llm_tracer":{},"http"`, 1)
+	useStoreDir(t)
 
 	tester := caddytest.NewTester(t).WithDefaultOverrides(caddytest.Config{AdminPort: testPorts[1]})
 	tester.InitServer(cfg, "json")
@@ -100,7 +101,8 @@ func TestTracePartDownload(t *testing.T) {
 			},
 		},
 	)
-	cfg = strings.Replace(cfg, `"apps":{"http"`, `"apps":{"llm_tracer":{"dir":"`+t.TempDir()+`"},"http"`, 1)
+	cfg = strings.Replace(cfg, `"apps":{"http"`, `"apps":{"llm_tracer":{},"http"`, 1)
+	useStoreDir(t)
 
 	tester := caddytest.NewTester(t).WithDefaultOverrides(caddytest.Config{AdminPort: testPorts[1]})
 	tester.InitServer(cfg, "json")

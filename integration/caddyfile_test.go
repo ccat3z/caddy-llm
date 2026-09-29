@@ -162,13 +162,13 @@ func TestFullChainCaddyfile(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	traceDir := t.TempDir()
+	useStoreDir(t) // store writes into the temp XDG dir
 	cf := fmt.Sprintf(`{
 	admin localhost:%d
 	http_port %d
 	auto_https off
 
-	llm_tracer %s
+	llm_tracer
 }
 
 http://127.0.0.1:%d {
@@ -185,7 +185,7 @@ http://127.0.0.1:%d {
 		llm_tracer_api
 	}
 }
-`, testPorts[1], testPorts[0], traceDir, testPorts[0],
+`, testPorts[1], testPorts[0], testPorts[0],
 		strings.TrimPrefix(upstream.URL, "http://"))
 
 	tester := caddytest.NewTester(t).WithDefaultOverrides(caddytest.Config{AdminPort: testPorts[1]})

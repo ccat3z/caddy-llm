@@ -18,7 +18,7 @@ Configure via JSON (`caddy-llm run --config caddy.json`) or Caddyfile
 | `http.handlers.trace` | Captures the request/response passing through it (both sides of a translation when chained) and records them to the trace store. Extracts token usage (input / cache / output, three independent counts) from the response; `cache_in_input: true` when the tracer's upstream counts cache inside input (OpenAI-style `prompt_tokens` — cache is then subtracted so the store is always independent). |
 | `http.handlers.llm_tracer_api` | HTTP query API for recorded traces and token-usage time series. |
 | [`web/`](web/) | React dashboard over the traces API: stacked token-usage time series and the request event table with raw HTTP exchanges. Embedded into the binary (`go:embed`) and served by `llm_tracer_api` at `{mount}/ui/`. |
-| `llm_tracer` (app) | Trace persistence: raw replayable HTTP messages in rolling `history-*.raw` files + SQLite index. `dir` defaults to caddy's data directory (`caddy.AppDataDir()/llm-tracer`, e.g. `~/.local/share/caddy/llm-tracer`). |
+| `llm_tracer` (app) | Trace persistence: raw replayable HTTP messages in rolling `history-*.raw` files + SQLite index, always under caddy's data directory (`caddy.AppDataDir()/llm-tracer`). `max_size` (default `10G`, 0 disables) caps the directory: the oldest history files are deleted on overflow; summary rows (and token stats) survive. |
 
 ## Examples
 
@@ -44,7 +44,8 @@ caddy-llm run --config examples/traced-translation.Caddyfile
 ```
 
 Caddyfile directives: `claude2openai`, `trace <name>`, `llm_tracer_api`,
-the `llm_tracer <dir>` global option, and `llm_route` (with `model`
+the `llm_tracer` global option (no args, or a block with `max_size`), and
+`llm_route` (with `model`
 subdirectives; the subchain is everything else in the block). Handler chains
 written in a `route` block keep their written order — use one whenever
 position matters (e.g. `trace` after `claude2openai`); elsewhere directives

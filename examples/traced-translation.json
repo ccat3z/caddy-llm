@@ -3,9 +3,7 @@
     "listen": "localhost:2019"
   },
   "apps": {
-    "llm_tracer": {
-      "dir": "/var/lib/caddy/llm-traces"
-    },
+    "llm_tracer": {},
     "http": {
       "http_port": 8080,
       "servers": {
