@@ -3,6 +3,7 @@ package claudetoopenai
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 )
 
 // TranslateResponse converts a non-streaming OpenAI chat-completions response
@@ -160,6 +161,10 @@ func TranslateError(status int, body []byte) []byte {
 	}
 
 	// An upstream JSON error body overrides the derived type and message.
+	// Following CLIProxyAPI semantics: `error.type` overrides the type (but
+	// the envelope's own "error" type never does); `error.message` overrides
+	// the message; `error.code` is only a message fallback, never a type —
+	// OpenAI-style codes ("1234", "insufficient_quota") are not Claude types.
 	var parsed struct {
 		Error *struct {
 			Type    string `json:"type"`
@@ -179,13 +184,13 @@ func TranslateError(status int, body []byte) []byte {
 			}{Type: parsed.Type, Message: parsed.Message}
 		}
 		if e != nil {
-			if e.Type != "" {
-				errType = e.Type
-			} else if s, ok := e.Code.(string); ok && s != "" {
-				errType = s
+			if t := strings.TrimSpace(e.Type); t != "" && t != "error" {
+				errType = t
 			}
-			if e.Message != "" {
-				msg = e.Message
+			if m := strings.TrimSpace(e.Message); m != "" {
+				msg = m
+			} else if c, ok := e.Code.(string); ok && strings.TrimSpace(c) != "" {
+				msg = strings.TrimSpace(c)
 			}
 		}
 	}

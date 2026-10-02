@@ -61,7 +61,7 @@ func TestCliProxyAPIRegressionStream(t *testing.T) {
 		ran++
 	}
 	if ran == 0 {
-		t.Skip("no streaming pairs found in sample")
+		t.Skip("no streaming pairs found in corpus")
 	}
 	t.Logf("verified %d/%d files", ran, len(files))
 }

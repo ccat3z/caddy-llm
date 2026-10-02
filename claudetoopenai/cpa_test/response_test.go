@@ -67,7 +67,7 @@ func TestCliProxyAPIRegressionResponse(t *testing.T) {
 		ran++
 	}
 	if ran == 0 {
-		t.Skip("no non-streaming pairs found in sample")
+		t.Skip("no non-streaming pairs found in corpus")
 	}
 	t.Logf("verified %d/%d files", ran, len(files))
 }
@@ -75,7 +75,7 @@ func TestCliProxyAPIRegressionResponse(t *testing.T) {
 // TestCliProxyAPIRegressionError replays upstream error responses through
 // claudetoopenai.TranslateError and compares against the client-facing error body. Errors are
 // rare in the corpus, so this scans the full log directory for error-final
-// files rather than the standard sample.
+// files.
 func TestCliProxyAPIRegressionError(t *testing.T) {
 	files := regressionFiles(t)
 	if len(files) == 0 {
@@ -83,7 +83,7 @@ func TestCliProxyAPIRegressionError(t *testing.T) {
 	}
 	// Known error-final files (verified against the corpus — files whose final
 	// upstream attempt returned a real 4xx/5xx body) so the test finds cases
-	// even when the deterministic sample contains none. Excluded: files whose
+	// even when the corpus contains none. Excluded: files whose
 	// last attempt died with a transport "Error:" line (no upstream response).
 	files = append(files, []string{
 		"v1-messages-2026-07-06T220142-a3fd0aa6.log",
@@ -123,7 +123,7 @@ func TestCliProxyAPIRegressionError(t *testing.T) {
 		ran++
 	}
 	if ran == 0 {
-		t.Skip("no error responses found in sample")
+		t.Skip("no error responses found in corpus")
 	}
 	t.Logf("verified %d/%d files", ran, len(files))
 }

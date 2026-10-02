@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -24,14 +23,10 @@ var logsDir = func() string {
 	return filepath.Join("..", "..", "..", "CLIproxyAPI", "data", "logs")
 }()
 
-const (
-	maxGoldenFile = 512 * 1024 // skip unusually large transcripts
-	defaultSample = 300        // files exercised per run
-)
+const maxGoldenFile = 512 * 1024 // skip unusually large transcripts
 
-// regressionFiles deterministically samples usable log files: sorted by name,
-// filtered by pattern and size, then every Kth file up to defaultSample.
-// CPA_REGRESSION_ALL=1 uses every matching file; CPA_REGRESSION_SAMPLE=N overrides the target.
+// regressionFiles returns all usable log files: sorted by name and filtered
+// by pattern and size.
 func regressionFiles(t *testing.T) []string {
 	t.Helper()
 	entries, err := os.ReadDir(logsDir)
@@ -51,25 +46,7 @@ func regressionFiles(t *testing.T) []string {
 		names = append(names, n)
 	}
 	sort.Strings(names)
-
-	if os.Getenv("CPA_REGRESSION_ALL") == "1" {
-		return names
-	}
-	target := defaultSample
-	if v := os.Getenv("CPA_REGRESSION_SAMPLE"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			target = n
-		}
-	}
-	if len(names) <= target {
-		return names
-	}
-	step := len(names) / target
-	out := make([]string, 0, target)
-	for i := 0; i < len(names) && len(out) < target; i += step {
-		out = append(out, names[i])
-	}
-	return out
+	return names
 }
 
 // TestCliProxyAPIRegressionRequest replays (client Claude request -> upstream
@@ -115,9 +92,9 @@ func TestCliProxyAPIRegressionRequest(t *testing.T) {
 		}
 	}
 	if ran == 0 {
-		t.Skip("no chat-completions pairs found in sample")
+		t.Skip("no chat-completions pairs found in corpus")
 	}
-	t.Logf("verified %d chat-completions attempts in %d sampled files", ran, len(files))
+	t.Logf("verified %d chat-completions attempts in %d files", ran, len(files))
 }
 
 // jsonDeepEq compares decoded JSON values, treating nil vs empty-slice and

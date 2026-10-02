@@ -205,12 +205,28 @@ func TestTranslateError(t *testing.T) {
 		t.Errorf("override = %v", e)
 	}
 
-	// code instead of type
+	// code is never a type (OpenAI codes are not Claude types); message wins
 	b = TranslateError(502, []byte(`{"error":{"code":"model_overloaded","message":"try later"}}`))
 	json.Unmarshal(b, &got)
 	e = got["error"].(map[string]any)
-	if e["type"] != "model_overloaded" {
-		t.Errorf("code fallback = %v", e)
+	if e["type"] != "api_error" || e["message"] != "try later" {
+		t.Errorf("code is not a type = %v", e)
+	}
+
+	// code as message fallback when message is absent
+	b = TranslateError(500, []byte(`{"error":{"code":"1234"}}`))
+	json.Unmarshal(b, &got)
+	e = got["error"].(map[string]any)
+	if e["type"] != "api_error" || e["message"] != "1234" {
+		t.Errorf("code message fallback = %v", e)
+	}
+
+	// the envelope's own "error" type never overrides
+	b = TranslateError(400, []byte(`{"error":{"type":"error","message":"x"}}`))
+	json.Unmarshal(b, &got)
+	e = got["error"].(map[string]any)
+	if e["type"] != "invalid_request_error" {
+		t.Errorf("envelope error type = %v", e)
 	}
 
 	// status map coverage

@@ -226,9 +226,8 @@ client-facing response):
 1. **CLIProxyAPI regression tests** (`claudetoopenai/cpa_test`) replay the real log
    directory — every recorded exchange becomes a regression case for the
    node-domain translator — from `CPA_LOG_DIR` (default:
-   `../CLIproxyAPI/data/logs`); tests skip when absent. Controls:
-   - `CPA_REGRESSION_SAMPLE=N` — number of files to test (default 300)
-   - `CPA_REGRESSION_ALL=1` — every file (~20k verified pairs, ~1 min)
+   `../CLIproxyAPI/data/logs`); tests skip when absent. Every matching file
+   is exercised (~40k verified pairs, a few minutes).
 2. **Committed sanitized cases** (`claudetoopenai/cpa_test/testdata`) run
    everywhere without the log directory: five representative exchanges (text
    stream, tool-call stream, thinking stream, non-streaming tool response,
