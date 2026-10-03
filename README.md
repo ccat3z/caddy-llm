@@ -192,6 +192,12 @@ The handler is prefix-agnostic: mount it at any path with `rewrite`'s
   (build `web/` first; see [web/README.md](web/README.md)). The `ui`
   prefix only claims the first path segment; trace names live in the
   second segment (`/{traceID}/{name}`) and are unaffected.
+- `GET /llm/traces/metrics` — Prometheus scrape endpoint. Cumulative
+  per-trace-name counters (`caddy_llm_trace_requests_total`,
+  `caddy_llm_trace_input_tokens_total`, `caddy_llm_trace_cache_tokens_total`,
+  `caddy_llm_trace_output_tokens_total`, label `trace_name`), aggregated from
+  the SQLite index at scrape time, so they survive restarts and raw-file
+  cleanup.
 
 Token accounting: the `trace` handler parses usage out of the response
 (Claude and OpenAI formats, streaming and buffered). Upstreams whose

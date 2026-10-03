@@ -36,13 +36,22 @@ function StatusBadge({ status, state }: { status?: number; state?: string }) {
   )
 }
 
+// Adaptive duration: ms under a second, fractional seconds under a minute,
+// m+s beyond — so hour-long streams don't render as a wall of milliseconds.
+const fmtMS = (ms: number) => {
+  if (ms < 1000) return `${Math.round(ms)}ms`
+  const s = ms / 1000
+  if (s < 60) return `${s.toFixed(s < 10 ? 2 : 1)}s`
+  const m = Math.floor(s / 60)
+  return `${m}m${Math.round(s - m * 60)}s`
+}
+
 const fmtDuration = (e: RequestSummary) => {
   if (e.state === 'in_progress') {
     // In-flight: show live elapsed instead of the (unset) final duration.
-    const ms = Date.now() - new Date(e.timestamp).getTime()
-    return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`
+    return fmtMS(Date.now() - new Date(e.timestamp).getTime())
   }
-  return e.duration_ms != null ? `${e.duration_ms}ms` : '—'
+  return e.duration_ms != null ? fmtMS(e.duration_ms) : '—'
 }
 
 const fmtTime = (ts: string) => {

@@ -292,6 +292,47 @@ type nopHandler struct{}
 
 func (nopHandler) ServeHTTP(_ http.ResponseWriter, _ *http.Request) error { return nil }
 
+// TestMetricsEndpoint scrapes /metrics and checks the per-trace-name token
+// totals: usage-bearing exchanges contribute tokens, usage-less ones still
+// count as requests.
+func TestMetricsEndpoint(t *testing.T) {
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+	if err := s.RecordRequest(ctx, "t1", "claude", time.Now(), 10, 200, 7, 5,
+		&Usage{Input: 100, Cache: 40, Output: 20}, "m1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordRequest(ctx, "t2", "glm", time.Now(), 10, 200, 7, 5,
+		&Usage{Input: 1, Cache: 0, Output: 2}, "m2"); err != nil {
+		t.Fatal(err)
+	}
+	// No usage (nil) — still a recorded request.
+	if err := s.RecordRequest(ctx, "t3", "glm", time.Now(), 10, 500, 7, 0, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	api := &TraceAPI{app: &Store{db: s}}
+
+	rec := httptest.NewRecorder()
+	api.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil), nopHandler{})
+	body := rec.Body.String()
+	if rec.Code != 200 {
+		t.Fatalf("metrics = %d %s", rec.Code, body)
+	}
+	for _, want := range []string{
+		`caddy_llm_trace_requests_total{trace_name="claude"} 1`,
+		`caddy_llm_trace_input_tokens_total{trace_name="claude"} 100`,
+		`caddy_llm_trace_cache_tokens_total{trace_name="claude"} 40`,
+		`caddy_llm_trace_output_tokens_total{trace_name="claude"} 20`,
+		`caddy_llm_trace_requests_total{trace_name="glm"} 2`,
+		`caddy_llm_trace_input_tokens_total{trace_name="glm"} 1`,
+		`caddy_llm_trace_output_tokens_total{trace_name="glm"} 2`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("metrics missing %q in:\n%s", want, body)
+		}
+	}
+}
+
 // TestRawStoreRotateConcurrentSegments locks the rotation-seal fix: when a
 // rotation fires, EVERY open segment must be sealed — another exchange's
 // continuing segment must not keep growing its old-file row while its bytes

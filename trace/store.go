@@ -28,7 +28,7 @@ import (
 func init() {
 	caddy.RegisterModule(Store{})
 	httpcaddyfile.RegisterGlobalOption("llm_tracer", parseGlobalOption)
-	caddy.RegisterModule(TraceAPI{})
+	caddy.RegisterModule(&TraceAPI{})
 	httpcaddyfile.RegisterHandlerDirective("llm_tracer_api", parseTraceAPICaddyfile)
 	httpcaddyfile.RegisterDirectiveOrder("llm_tracer_api", httpcaddyfile.Before, "respond")
 }
@@ -224,6 +224,19 @@ type storage interface {
 	// seconds, optionally filtered by trace name and time range (zero times =
 	// unbounded).
 	UsageSeries(ctx context.Context, intervalSec int64, from, to time.Time, traceName string) ([]UsageBucket, error)
+
+	// UsageTotals aggregates the whole llm_requests index per trace name —
+	// cumulative token counts and request counts — for /metrics.
+	UsageTotals(ctx context.Context) ([]TraceTotals, error)
+}
+
+// TraceTotals is the cumulative per-trace-name accounting behind /metrics.
+type TraceTotals struct {
+	TraceName string
+	Requests  int64
+	Input     int64
+	Cache     int64
+	Output    int64
 }
 
 // ---------- raw file + sqlite index implementation ----------
@@ -707,6 +720,29 @@ func (s *rawStore) UsageSeries(_ context.Context, intervalSec int64, from, to ti
 	return out, rows.Err()
 }
 
+// UsageTotals implements storage.
+func (s *rawStore) UsageTotals(_ context.Context) ([]TraceTotals, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.Query(
+		`SELECT trace_name, COUNT(*), COALESCE(SUM(in_tokens),0), COALESCE(SUM(cache_tokens),0), COALESCE(SUM(out_tokens),0)
+		 FROM llm_requests GROUP BY trace_name ORDER BY trace_name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []TraceTotals{}
+	for rows.Next() {
+		var t TraceTotals
+		if err := rows.Scan(&t.TraceName, &t.Requests, &t.Input, &t.Cache, &t.Output); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
 // readParts concatenates the raw bytes of the given segments. Every history
 // file is opened transiently — the only held-open handle is the active
 // write file, and it is O_WRONLY — so reads never accumulate fds. Callers
@@ -757,10 +793,13 @@ var _ storage = (*rawStore)(nil)
 type TraceAPI struct {
 	logger *zap.Logger
 	app    *Store
+
+	metricsOnce sync.Once
+	metrics     http.Handler
 }
 
 // CaddyModule returns the Caddy module information.
-func (TraceAPI) CaddyModule() caddy.ModuleInfo {
+func (*TraceAPI) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
 		ID:  "http.handlers.llm_tracer_api",
 		New: func() caddy.Module { return new(TraceAPI) },
@@ -786,8 +825,16 @@ func (t *TraceAPI) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyh
 		return next.ServeHTTP(w, r)
 	}
 	// The route prefix (e.g. /llm/traces) is stripped before this handler;
-	// what remains is "" (list) or "{traceID}/{name}".
+	// what remains is "" (list), "{traceID}/{name}", or a reserved route.
 	rest := strings.Trim(r.URL.Path, "/")
+
+	// Prometheus metrics: cumulative per-trace-name token usage, aggregated
+	// from the index at scrape time. Branches before the JSON content type
+	// so prometheus/text-protocols wins.
+	if rest == "metrics" {
+		t.metricsHandler().ServeHTTP(w, r)
+		return nil
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 
