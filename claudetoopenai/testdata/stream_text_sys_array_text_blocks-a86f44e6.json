@@ -1,6 +1,5 @@
 {
   "name": "v1-messages-2026-07-11T090620-26946624",
-  "source": "CLIProxyAPI regression corpus (sanitized)",
   "request": {
     "header": {
       "Accept": "application/json",

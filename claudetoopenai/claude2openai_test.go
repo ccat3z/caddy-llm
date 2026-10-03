@@ -333,7 +333,7 @@ func TestGetBodyUsable(t *testing.T) {
 // ---------- recorded-corpus fixtures (testdata/*.json) ----------
 //
 // Files without the synthetic_ prefix are sanitized extracts of real
-// CLIProxyAPI proxy exchanges (credentials, cookies, session IDs, hostnames,
+// proxy exchanges (credentials, cookies, session IDs, hostnames,
 // and user paths redacted — guarded by TestFixturesSanitized below);
 // synthetic_*.json are hand-written cases for request/response shapes the
 // recorded traffic never contained. One file per exchange:
@@ -1242,7 +1242,7 @@ func checkErrorReplay(t *testing.T, fx fixture, rec *observingRecorder) {
 }
 
 // expectedError independently derives the Claude error type/message from an
-// upstream status + body (the CLIProxyAPI-derived semantics).
+// upstream status + body.
 func expectedError(status int, body []byte) (string, string) {
 	typ := "invalid_request_error"
 	switch {

@@ -11,7 +11,7 @@ import (
 // (Tracer.CacheInInput) subtracts cache from input for upstreams whose
 // reported input includes it.
 //
-// Cache counts read tokens only, matching Anthropic/CPA semantics: cache
+// Cache counts read tokens only, matching Anthropic semantics: cache
 // writes (cache_creation_input_tokens / cache_write_tokens) stay inside
 // input.
 type Usage struct {

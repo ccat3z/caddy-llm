@@ -225,29 +225,23 @@ go test ./...
 The caddytest-based packages (claudetoopenai, integration) bind a random
 port pair per test binary, so parallel package runs don't conflict.
 
-Three layers of translation tests, the first driven by CLIProxyAPI request
-logs (original Claude request → forwarded OpenAI request, upstream response →
-client-facing response), the others committed:
+Translation tests, all committed and driven by fixtures (original Claude
+request → forwarded OpenAI request, upstream response → client-facing
+response):
 
-1. **CLIProxyAPI regression tests** (`claudetoopenai/cpa_test`) replay the real log
-   directory — every recorded exchange becomes a regression case for the
-   node-domain translator — from `CPA_LOG_DIR` (default:
-   `../CLIproxyAPI/data/logs`); tests skip when absent. Every matching file
-   is exercised (~40k verified pairs, a few minutes).
-2. **Committed sanitized cases** (`claudetoopenai/cpa_test/testdata`) run
-   everywhere without the log directory: five representative exchanges (text
-   stream, tool-call stream, thinking stream, non-streaming tool response,
-   mid-stream error) extracted from real logs with credentials, cookies,
-   session IDs, hostnames, and user paths redacted — guarded by a leak test.
-3. **Committed JSON fixtures** (`claudetoopenai/testdata`) drive the full
-   handler end to end without any external directory: one JSON file per
-   exchange (`{request: {header, body}, response: {header, body, sse}}` —
+1. **Unit tests** in `claudetoopenai` cover the pure translation functions
+   and handler edge paths (error branches, gzip, fallthrough semantics).
+2. **Committed JSON fixtures** (`claudetoopenai/testdata`) drive the full
+   handler end to end: one JSON file per exchange
+   (`{request: {header, body}, response: {header, body, sse}}` —
    the client's Claude request plus the upstream OpenAI response that
-   answered it, `:status` in the response header). Fixtures were selected
-   from the corpus by feature coverage (each is the smallest verified
-   exchange for a shape: tool splits, thinking, images in tool results,
-   error variants), sanitized, and pruned; `synthetic_*.json` are
-   hand-written cases for shapes the corpus never contained (tool_choice,
+   answered it, `:status` in the response header). Files without the
+   synthetic_ prefix are sanitized extracts of real proxy traffic,
+   selected by feature coverage (each is the smallest verified exchange
+   for a shape: tool splits, thinking, images in tool results, error
+   variants), with message content, credentials, identifiers, hostnames,
+   and user paths redacted; `synthetic_*.json` are hand-written cases for
+   shapes the recorded traffic never contained (tool_choice,
    temperature/top_p, stop_sequences, thinking budgets, error statuses).
    The tests verify against independent re-readings of the upstream data,
    not the translator's own output; a leak test guards sanitization.
@@ -261,9 +255,6 @@ claudetoopenai/           claude2openai handler + the Anthropic↔OpenAI
                           translation (request on nodes + response/stream)
 llmroute/                 llm_route handler (model routing + fallthrough)
 trace/                    trace handler + llm_tracer app + query API
-claudetoopenai/cpa_test/  CLIProxyAPI regression tests over the pure
-                          translation functions, sanitized cases, and the
-                          log-format parser
 integration/              full-chain integration tests (JSON configs)
 examples/                 validated JSON config examples
 cmd/caddy-llm/            custom binary entry

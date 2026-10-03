@@ -160,11 +160,11 @@ func TranslateError(status int, body []byte) []byte {
 		}
 	}
 
-	// An upstream JSON error body overrides the derived type and message.
-	// Following CLIProxyAPI semantics: `error.type` overrides the type (but
-	// the envelope's own "error" type never does); `error.message` overrides
-	// the message; `error.code` is only a message fallback, never a type —
-	// OpenAI-style codes ("1234", "insufficient_quota") are not Claude types.
+	// An upstream JSON error body overrides the derived type and message:
+	// `error.type` overrides the type (but the envelope's own "error" type
+	// never does); `error.message` overrides the message; `error.code` is
+	// only a message fallback, never a type — OpenAI-style codes ("1234",
+	// "insufficient_quota") are not Claude types.
 	var parsed struct {
 		Error *struct {
 			Type    string `json:"type"`
