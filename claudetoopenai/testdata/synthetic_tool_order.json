@@ -1,0 +1,57 @@
+{
+  "name": "synthetic_tool_order",
+  "request": {
+    "header": {
+      "Content-Type": "application/json",
+      "Accept": "application/json",
+      "Anthropic-Version": "2023-06-01",
+      "Authorization": "<REDACTED-AUTH>",
+      "User-Agent": "synthetic/1.0 (claudetoopenai test)"
+    },
+    "body": {
+      "model": "synthetic-1",
+      "max_tokens": 64,
+      "stream": true,
+      "temperature": 1,
+      "system": "   ",
+      "tools": [
+        {
+          "name": "pick",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "tags": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": "pick two"
+        }
+      ]
+    }
+  },
+  "response": {
+    "header": {
+      ":status": "200",
+      "Content-Type": "text/event-stream"
+    },
+    "body": null,
+    "sse": [
+      "{not json at all",
+      "{\"id\":\"cs\",\"object\":\"chat.completion.chunk\",\"model\":\"synthetic-model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":1,\"id\":\"call_b\",\"type\":\"function\",\"function\":{\"name\":\"beta\",\"arguments\":\"{\\\"n\\\":\"}}]}}]}",
+      "{\"id\":\"cs\",\"object\":\"chat.completion.chunk\",\"model\":\"synthetic-model\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":1,\"function\":{\"arguments\":\"2}\"}}]}}]}",
+      "{\"id\":\"cs\",\"object\":\"chat.completion.chunk\",\"model\":\"synthetic-model\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_a\",\"type\":\"function\",\"function\":{\"name\":\"alpha\",\"arguments\":\"{\\\"n\\\":1}\"}}]}}]}",
+      "{\"id\":\"cs\",\"object\":\"chat.completion.chunk\",\"model\":\"synthetic-model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}",
+      "{\"id\":\"cs\",\"object\":\"chat.completion.chunk\",\"model\":\"synthetic-model\",\"choices\":[{\"index\":0,\"delta\":{}}],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":3,\"total_tokens\":15}}",
+      "[DONE]"
+    ]
+  }
+}

@@ -1,0 +1,82 @@
+{
+  "name": "v1-messages-2026-08-06T095246-52e5ef30",
+  "source": "CLIProxyAPI regression corpus (sanitized)",
+  "request": {
+    "header": {
+      "Accept": "application/json",
+      "Anthropic-Beta": "claude-code-20250219,context-1m-2025-08-07,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,advisor-tool-2026-03-01,effort-2025-11-24,structured-outputs-2025-12-15",
+      "Anthropic-Version": "2023-06-01",
+      "Authorization": "<REDACTED-AUTH>",
+      "Content-Type": "application/json",
+      "User-Agent": "claude-cli/2.1.201 (external, cli)",
+      "X-App": "cli"
+    },
+    "body": {
+      "max_tokens": 32000,
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "[redacted text]",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "metadata": {
+        "user_id": "<REDACTED-USER-META>"
+      },
+      "model": "glm-5.2",
+      "output_config": {
+        "effort": "high",
+        "format": {
+          "schema": {
+            "additionalProperties": false,
+            "properties": {
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "title"
+            ],
+            "type": "object"
+          },
+          "type": "json_schema"
+        }
+      },
+      "stream": true,
+      "system": [
+        {
+          "text": "[redacted system prompt]",
+          "type": "text"
+        },
+        {
+          "text": "[redacted system prompt]",
+          "type": "text"
+        }
+      ],
+      "tools": []
+    }
+  },
+  "response": {
+    "header": {
+      ":status": "200",
+      "Content-Type": "text/event-stream;charset=UTF-8"
+    },
+    "body": null,
+    "sse": [
+      "{\"choices\":[{\"delta\":{\"content\":\"text \",\"role\":\"assistant\"},\"index\":0}],\"created\":1785981162,\"id\":\"202608060952425c2841ccc97249f4\",\"model\":\"glm-5.2\",\"object\":\"chat.completion.chunk\"}",
+      "{\"choices\":[{\"delta\":{\"content\":\"text \",\"role\":\"assistant\"},\"index\":0}],\"created\":1785981162,\"id\":\"202608060952425c2841ccc97249f4\",\"model\":\"glm-5.2\",\"object\":\"chat.completion.chunk\"}",
+      "{\"choices\":[{\"delta\":{\"content\":\"text \",\"role\":\"assistant\"},\"index\":0}],\"created\":1785981162,\"id\":\"202608060952425c2841ccc97249f4\",\"model\":\"glm-5.2\",\"object\":\"chat.completion.chunk\"}",
+      "{\"choices\":[{\"delta\":{\"content\":\"text \",\"role\":\"assistant\"},\"index\":0}],\"created\":1785981162,\"id\":\"202608060952425c2841ccc97249f4\",\"model\":\"glm-5.2\",\"object\":\"chat.completion.chunk\"}",
+      "{\"choices\":[{\"delta\":{\"content\":\"text \",\"role\":\"assistant\"},\"index\":0}],\"created\":1785981162,\"id\":\"202608060952425c2841ccc97249f4\",\"model\":\"glm-5.2\",\"object\":\"chat.completion.chunk\"}",
+      "{\"choices\":[{\"delta\":{\"content\":\"text \",\"role\":\"assistant\"},\"index\":0}],\"created\":1785981162,\"id\":\"202608060952425c2841ccc97249f4\",\"model\":\"glm-5.2\",\"object\":\"chat.completion.chunk\"}",
+      "{\"choices\":[{\"delta\":{\"content\":\"text \",\"role\":\"assistant\"},\"index\":0}],\"created\":1785981162,\"id\":\"202608060952425c2841ccc97249f4\",\"model\":\"glm-5.2\",\"object\":\"chat.completion.chunk\"}",
+      "{\"choices\":[{\"delta\":{\"content\":\"text \",\"role\":\"assistant\"},\"index\":0}],\"created\":1785981162,\"id\":\"202608060952425c2841ccc97249f4\",\"model\":\"glm-5.2\",\"object\":\"chat.completion.chunk\"}",
+      "{\"choices\":[{\"delta\":{\"content\":\"\",\"role\":\"assistant\"},\"finish_reason\":\"stop\",\"index\":0}],\"created\":1785981162,\"id\":\"202608060952425c2841ccc97249f4\",\"model\":\"glm-5.2\",\"object\":\"chat.completion.chunk\",\"usage\":{\"completion_tokens\":11,\"completion_tokens_details\":{\"reasoning_tokens\":0},\"prompt_tokens\":350,\"prompt_tokens_details\":{\"cached_tokens\":0},\"total_tokens\":361}}",
+      "[DONE]"
+    ]
+  }
+}

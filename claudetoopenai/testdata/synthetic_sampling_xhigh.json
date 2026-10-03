@@ -1,0 +1,72 @@
+{
+  "name": "synthetic_sampling_xhigh",
+  "request": {
+    "header": {
+      "Content-Type": "application/json",
+      "Accept": "application/json",
+      "Anthropic-Version": "2023-06-01",
+      "Authorization": "<REDACTED-AUTH>",
+      "User-Agent": "synthetic/1.0 (claudetoopenai test)"
+    },
+    "body": {
+      "model": "synthetic-1",
+      "max_tokens": 512,
+      "stream": false,
+      "temperature": 0.7,
+      "stop_sequences": [
+        "END"
+      ],
+      "thinking": {
+        "type": "enabled",
+        "budget_tokens": 30000
+      },
+      "system": "You are a concise test assistant.",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hello"
+        }
+      ]
+    }
+  },
+  "response": {
+    "header": {
+      ":status": "200",
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "id": "chat-synthetic",
+      "object": "chat.completion",
+      "created": 1759000000,
+      "model": "synthetic-model",
+      "choices": [
+        {
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "part one"
+              },
+              {
+                "type": "text",
+                "text": "part two"
+              }
+            ]
+          },
+          "finish_reason": "stop"
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 21,
+        "completion_tokens": 5,
+        "total_tokens": 26,
+        "prompt_tokens_details": {
+          "cached_tokens": 4
+        }
+      }
+    },
+    "sse": []
+  }
+}

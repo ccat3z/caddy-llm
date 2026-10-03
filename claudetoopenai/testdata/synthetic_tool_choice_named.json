@@ -1,0 +1,137 @@
+{
+  "name": "synthetic_tool_choice_named",
+  "request": {
+    "header": {
+      "Content-Type": "application/json",
+      "Accept": "application/json",
+      "Anthropic-Version": "2023-06-01",
+      "Authorization": "<REDACTED-AUTH>",
+      "User-Agent": "synthetic/1.0 (claudetoopenai test)"
+    },
+    "body": {
+      "model": "synthetic-1",
+      "max_tokens": 100,
+      "stream": true,
+      "tools": [
+        {
+          "name": "search",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "q": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ],
+      "tool_choice": {
+        "type": "tool",
+        "name": "search"
+      },
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "image",
+              "source": {
+                "type": "url",
+                "url": "https://example.test/diagram.png"
+              }
+            },
+            {
+              "type": "text",
+              "text": "what is this"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "thinking",
+              "thinking": "unsigned thought is dropped",
+              "signature": ""
+            },
+            {
+              "type": "redacted_thinking",
+              "data": "AgIAZXhhbXBsZQ=="
+            },
+            {
+              "type": "text",
+              "text": "let me look"
+            },
+            {
+              "type": "tool_use",
+              "id": "toolu_1",
+              "name": "search",
+              "input": {
+                "q": "diagram"
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "toolu_1",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "found"
+                },
+                {
+                  "type": "image",
+                  "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": "cmVkdWN0ZWQ="
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "role": "system",
+          "content": [
+            {
+              "type": "text",
+              "text": "mid-conversation reminder"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "thinking",
+              "thinking": "signed thought round-trips",
+              "signature": "sig-REDACTED"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": "thanks"
+        }
+      ]
+    }
+  },
+  "response": {
+    "header": {
+      ":status": "200",
+      "Content-Type": "text/event-stream"
+    },
+    "body": null,
+    "sse": [
+      "{\"id\":\"cs\",\"object\":\"chat.completion.chunk\",\"model\":\"synthetic-model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}",
+      "{\"id\":\"cs\",\"object\":\"chat.completion.chunk\",\"model\":\"synthetic-model\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"thinking aloud\"}}]}",
+      "{\"id\":\"cs\",\"object\":\"chat.completion.chunk\",\"model\":\"synthetic-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"done\"},\"finish_reason\":\"stop\"}]}",
+      "[DONE]"
+    ]
+  }
+}

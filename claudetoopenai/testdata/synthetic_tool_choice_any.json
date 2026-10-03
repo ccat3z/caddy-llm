@@ -1,0 +1,87 @@
+{
+  "name": "synthetic_tool_choice_any",
+  "request": {
+    "header": {
+      "Content-Type": "application/json",
+      "Accept": "application/json",
+      "Anthropic-Version": "2023-06-01",
+      "Authorization": "<REDACTED-AUTH>",
+      "User-Agent": "synthetic/1.0 (claudetoopenai test)"
+    },
+    "body": {
+      "model": "synthetic-1",
+      "max_tokens": 100,
+      "stream": false,
+      "tools": [
+        {
+          "name": "read_file",
+          "description": "read a file",
+          "input_schema": {
+            "type": "object"
+          }
+        }
+      ],
+      "tool_choice": {
+        "type": "any",
+        "disable_parallel_tool_use": true
+      },
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "document",
+              "source": {
+                "type": "base64",
+                "media_type": "application/pdf",
+                "data": "cmVkdWN0ZWQ="
+              }
+            },
+            {
+              "type": "text",
+              "text": "summarize"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "response": {
+    "header": {
+      ":status": "200",
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "id": "chat-synthetic",
+      "object": "chat.completion",
+      "created": 1759000000,
+      "model": "synthetic-model",
+      "choices": [
+        {
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [
+              {
+                "id": "call_9",
+                "type": "function",
+                "function": {
+                  "name": "read_file",
+                  "arguments": "{oops"
+                }
+              }
+            ]
+          },
+          "finish_reason": "tool_calls"
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 9,
+        "completion_tokens": 2,
+        "total_tokens": 11
+      }
+    },
+    "sse": []
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "name": "synthetic_error_401",
+  "request": {
+    "header": {
+      "Content-Type": "application/json",
+      "Accept": "application/json",
+      "Anthropic-Version": "2023-06-01",
+      "Authorization": "<REDACTED-AUTH>",
+      "User-Agent": "synthetic/1.0 (claudetoopenai test)"
+    },
+    "body": {
+      "model": "synthetic-1",
+      "max_tokens": 8,
+      "stream": false,
+      "messages": [
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ]
+    }
+  },
+  "response": {
+    "header": {
+      ":status": "401",
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "error": {
+        "type": "invalid_api_key",
+        "message": "bad key"
+      }
+    },
+    "sse": []
+  }
+}

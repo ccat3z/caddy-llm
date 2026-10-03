@@ -225,9 +225,9 @@ go test ./...
 The caddytest-based packages (claudetoopenai, integration) bind a random
 port pair per test binary, so parallel package runs don't conflict.
 
-Two layers of translation tests, both driven by CLIProxyAPI request logs
-(original Claude request → forwarded OpenAI request, upstream response →
-client-facing response):
+Three layers of translation tests, the first driven by CLIProxyAPI request
+logs (original Claude request → forwarded OpenAI request, upstream response →
+client-facing response), the others committed:
 
 1. **CLIProxyAPI regression tests** (`claudetoopenai/cpa_test`) replay the real log
    directory — every recorded exchange becomes a regression case for the
@@ -239,6 +239,18 @@ client-facing response):
    stream, tool-call stream, thinking stream, non-streaming tool response,
    mid-stream error) extracted from real logs with credentials, cookies,
    session IDs, hostnames, and user paths redacted — guarded by a leak test.
+3. **Committed JSON fixtures** (`claudetoopenai/testdata`) drive the full
+   handler end to end without any external directory: one JSON file per
+   exchange (`{request: {header, body}, response: {header, body, sse}}` —
+   the client's Claude request plus the upstream OpenAI response that
+   answered it, `:status` in the response header). Fixtures were selected
+   from the corpus by feature coverage (each is the smallest verified
+   exchange for a shape: tool splits, thinking, images in tool results,
+   error variants), sanitized, and pruned; `synthetic_*.json` are
+   hand-written cases for shapes the corpus never contained (tool_choice,
+   temperature/top_p, stop_sequences, thinking budgets, error statuses).
+   The tests verify against independent re-readings of the upstream data,
+   not the translator's own output; a leak test guards sanitization.
 
 Package layout:
 

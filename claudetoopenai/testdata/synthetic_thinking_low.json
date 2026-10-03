@@ -1,0 +1,55 @@
+{
+  "name": "synthetic_thinking_low",
+  "request": {
+    "header": {
+      "Content-Type": "application/json",
+      "Accept": "application/json",
+      "Anthropic-Version": "2023-06-01",
+      "Authorization": "<REDACTED-AUTH>",
+      "User-Agent": "synthetic/1.0 (claudetoopenai test)"
+    },
+    "body": {
+      "model": "synthetic-1",
+      "max_tokens": 32,
+      "stream": false,
+      "thinking": {
+        "type": "enabled",
+        "budget_tokens": 800
+      },
+      "messages": [
+        {
+          "role": "user",
+          "content": "hi"
+        }
+      ]
+    }
+  },
+  "response": {
+    "header": {
+      ":status": "200",
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "id": "chat-synthetic",
+      "object": "chat.completion",
+      "created": 1759000000,
+      "model": "synthetic-model",
+      "choices": [
+        {
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": "ok"
+          },
+          "finish_reason": "length"
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 3,
+        "completion_tokens": 1,
+        "total_tokens": 4
+      }
+    },
+    "sse": []
+  }
+}
