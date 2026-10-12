@@ -31,10 +31,13 @@ func init() {
 }
 
 // fallthroughStatuses are the upstream response codes that trigger
-// fallthrough to the next llm_route. 5xx is implied.
+// fallthrough to the next llm_route. 5xx is implied. 403 falls through so
+// handlers with explicitly-configured credentials can fail over to other
+// upstreams when the credential is dead.
 func isFallthroughStatus(code int) bool {
 	return code == http.StatusTooManyRequests ||
 		code == http.StatusNotFound ||
+		code == http.StatusForbidden ||
 		code >= 500
 }
 
