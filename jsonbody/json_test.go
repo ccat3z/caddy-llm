@@ -1,4 +1,4 @@
-package internal
+package jsonbody
 
 import (
 	"encoding/json"

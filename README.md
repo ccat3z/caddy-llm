@@ -249,7 +249,7 @@ response):
 Package layout:
 
 ```
-internal/                 LazyJsonNode (json.go): lazy JSON value;
+jsonbody/                 LazyJsonNode (json.go): lazy JSON value;
                           JsonReqBody (req.go): the HTTP request body over a node
 claudetoopenai/           claude2openai handler + the Anthropic↔OpenAI
                           translation (request on nodes + response/stream)

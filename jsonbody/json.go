@@ -1,6 +1,6 @@
 // Package internal hosts the LazyJsonNode lazy-JSON value type and the
 // JsonReqBody HTTP request body built on it.
-package internal
+package jsonbody
 
 import (
 	"bytes"

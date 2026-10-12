@@ -23,7 +23,7 @@ import (
 	"github.com/caddyserver/caddy/v2/caddytest"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 
-	caddyllm "github.com/ccat3z/caddy-llm/internal"
+	caddyllm "github.com/ccat3z/caddy-llm/jsonbody"
 )
 
 // proxyConfig builds the JSON config: /v1/messages goes through

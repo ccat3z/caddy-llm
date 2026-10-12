@@ -11,7 +11,7 @@ package llmroute
 import (
 	"encoding/json"
 	"fmt"
-	caddyllm "github.com/ccat3z/caddy-llm/internal"
+	caddyllm "github.com/ccat3z/caddy-llm/jsonbody"
 	"net/http"
 	"net/url"
 	"regexp"
