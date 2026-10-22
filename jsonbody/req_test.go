@@ -45,6 +45,45 @@ func TestReadIsStreamed(t *testing.T) {
 	}
 }
 
+// TestFreshResetsCursor pins the fresh-cursor semantics: a consumed body
+// re-served as-is streams nothing (the llm_route fallthrough bug), while
+// Fresh over the same node serves the identical bytes again.
+func TestFreshResetsCursor(t *testing.T) {
+	b, err := NewJsonBodyFromBytes([]byte(`{"model":"glm-5.2"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadAll(b); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := b.Read(make([]byte, 8)); err != io.EOF || n != 0 {
+		t.Fatalf("consumed body read = %d, %v; want 0, io.EOF", n, err)
+	}
+
+	f := b.Fresh()
+	got, err := io.ReadAll(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `{"model":"glm-5.2"}` {
+		t.Errorf("fresh read = %s", got)
+	}
+	// The consumed original stays consumed: Fresh must not rewind it.
+	if n, err := b.Read(make([]byte, 8)); err != io.EOF || n != 0 {
+		t.Fatalf("original body rewound by Fresh: read = %d, %v", n, err)
+	}
+	// And a variant-style fresh body (struct copy of the node) behaves the
+	// same way.
+	v := &JsonReqBody{LazyJsonNode: b.LazyJsonNode}
+	vgot, err := io.ReadAll(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(vgot) != `{"model":"glm-5.2"}` {
+		t.Errorf("node-copy read = %s", vgot)
+	}
+}
+
 func TestFromBytesRejectsNonObject(t *testing.T) {
 	for _, raw := range []string{`not json`, `[1,2]`, `42`, `null`} {
 		if _, err := NewJsonBodyFromBytes([]byte(raw)); err == nil {

@@ -84,6 +84,15 @@ func (b *JsonReqBody) Close() error { return nil }
 
 var _ io.ReadCloser = (*JsonReqBody)(nil)
 
+// Fresh returns a new body over the same immutable node: identical wire
+// bytes, but a Reset Read cursor. The Read cursor is the one mutable part
+// of an otherwise immutable body, so a body already consumed by one
+// upstream (an earlier llm_route fallthrough leg) must not be re-served
+// as-is — the next leg would stream an empty body.
+func (b *JsonReqBody) Fresh() *JsonReqBody {
+	return &JsonReqBody{LazyJsonNode: b.LazyJsonNode}
+}
+
 // NewJsonBodyFromBytes parses raw as a JSON object.
 func NewJsonBodyFromBytes(raw []byte) (*JsonReqBody, error) {
 	b := NewJsonBody(raw)

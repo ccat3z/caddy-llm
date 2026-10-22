@@ -139,14 +139,18 @@ func (r *Route) ServeHTTP(w http.ResponseWriter, req *http.Request, next caddyht
 		return next.ServeHTTP(w, req)
 	}
 
-	// The clone's body: bodies are immutable, so a rule without a rewrite
-	// shares the original — a fallthrough still sees it pristine, because
-	// any handler that "changes" the body installs a new one on the request
-	// instead of mutating. A rewrite replaces just the top-level model key;
-	// untouched members keep their original bytes (With builds the variant
-	// over the node's one-level segmentation).
+	// The clone's body: a fresh cursor over the shared immutable node.
+	// Bodies are immutable except for the Read cursor, so the node is
+	// shared — a rule without a rewrite serves the same JSON as the
+	// original, and a rewrite replaces just the top-level model key
+	// (untouched members keep their original bytes; With builds the
+	// variant over the node's one-level segmentation). But the cursor
+	// must be per-leg: an earlier fallthrough leg's reverse_proxy may
+	// have read the shared instance to EOF, and re-installing it as-is
+	// would stream an empty body upstream (while a tracer's Marshal
+	// snapshot still shows the full bytes, masking the failure).
 	clone := cloneRequest(req)
-	cloneBody := body
+	cloneBody := body.Fresh()
 	if rewritten != modelStr {
 		variant := body.With("model", rewritten)
 		cloneBody = &caddyllm.JsonReqBody{LazyJsonNode: *variant}
@@ -184,6 +188,11 @@ func (r *Route) ServeHTTP(w http.ResponseWriter, req *http.Request, next caddyht
 	// Nothing reached the client: discard the held-back response, restore the
 	// header map, and fall through with the pristine original request.
 	pw.discard()
+	// Re-arm the body for whatever runs next: this leg's upstream may have
+	// consumed the shared Read cursor (see the fresh cursor above).
+	if jb, ok := req.Body.(*caddyllm.JsonReqBody); ok {
+		caddyllm.SetRequestBody(req, jb.Fresh())
+	}
 	return next.ServeHTTP(w, req)
 }
 

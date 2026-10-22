@@ -147,6 +147,14 @@ func TestLLMRoutePriorityAndFallthrough(t *testing.T) {
 		if status != 200 {
 			t.Fatalf("status = %d", status)
 		}
+		// The fallthrough upstream must receive the FULL body: the first
+		// leg's reverse_proxy consumed the shared Read cursor, and the
+		// re-installed body must serve fresh bytes. An empty body here
+		// produced upstream 400 "Field required" in production (bigmodel,
+		// trace 4cfa8478dcdab344).
+		if h := glm.last(); h.body["model"] != "glm-5.2" {
+			t.Errorf("glm received model = %v, want glm-5.2 (empty body on fallthrough?)", h.body["model"])
+		}
 	})
 
 	t.Run("404 falls through", func(t *testing.T) {
