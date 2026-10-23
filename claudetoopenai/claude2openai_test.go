@@ -215,6 +215,35 @@ func TestStreamingRoundTrip(t *testing.T) {
 	}
 }
 
+// TestStreamingUpstreamErrorTranslation: a non-200 upstream response to a
+// streaming request must still reach the client with its translated error
+// body, not as a bare status with an empty body (trace bc1bf2358625d9d2).
+func TestStreamingUpstreamErrorTranslation(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"type":"invalid_request_error","message":"tools are not supported"}}`))
+	}))
+	defer upstream.Close()
+
+	tester := startProxy(t, upstream.URL)
+	status, body := post(t, tester, "/v1/messages", `{"model":"m","max_tokens":1,"stream":true,"messages":[{"role":"user","content":"x"}]}`)
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d %s", status, body)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(body), &out); err != nil {
+		t.Fatalf("body: %v (%s)", err, body)
+	}
+	e, ok := out["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("body = %s, want an error envelope", body)
+	}
+	if e["type"] != "invalid_request_error" || e["message"] != "tools are not supported" {
+		t.Errorf("error = %v", e)
+	}
+}
+
 // TestUpstreamErrorTranslation: 429 from upstream becomes a Claude error body.
 func TestUpstreamErrorTranslation(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1230,15 +1259,32 @@ func checkErrorReplay(t *testing.T, fx fixture, rec *observingRecorder) {
 		return
 	}
 
-	// Streaming: nothing is committed; the observed status drives fallthrough.
+	// Streaming: the observed status drives llm_route's fallthrough decision.
 	if len(rec.observed) == 0 || rec.observed[len(rec.observed)-1] != fx.status() {
 		t.Errorf("observed statuses = %v, want last %d", rec.observed, fx.status())
 	}
-	if rec.Body.Len() > 0 {
-		t.Errorf("bytes committed on a fallthrough error: %s", truncStr(rec.Body.String(), 200))
+	if fallthroughStatus(fx.status()) {
+		// Fallthrough-eligible: nothing may be committed so the retry runs.
+		if rec.Body.Len() > 0 {
+			t.Errorf("bytes committed on a fallthrough error: %s", truncStr(rec.Body.String(), 200))
+		}
+		got := TranslateError(fx.status(), fx.upstreamBodyBytes(t))
+		assertErrEnvelope(got)
+		return
 	}
-	got := TranslateError(fx.status(), fx.upstreamBodyBytes(t))
-	assertErrEnvelope(got)
+	// Final (non-fallthrough) error: the translated envelope must reach the
+	// client instead of a bare status with an empty body.
+	if rec.Code != fx.status() {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, fx.status(), truncStr(rec.Body.String(), 400))
+	}
+	assertErrEnvelope(rec.Body.Bytes())
+}
+
+// fallthroughStatus mirrors llmroute.isFallthroughStatus: the statuses
+// llm_route retries on, for which streaming errors must stay uncommitted.
+func fallthroughStatus(code int) bool {
+	return code == http.StatusTooManyRequests || code == http.StatusNotFound ||
+		code == http.StatusForbidden || code >= 500
 }
 
 // expectedError independently derives the Claude error type/message from an

@@ -324,7 +324,8 @@ func (rw *responseWriter) feed(p []byte) (int, error) {
 // closes the stream (streaming).
 func (rw *responseWriter) finish() {
 	if rw.stream {
-		if rw.status == http.StatusOK {
+		switch rw.status {
+		case http.StatusOK:
 			if rw.gzSrc != nil {
 				// Signal EOF to the pump goroutine and WAIT for it to drain
 				// the last decompressed bytes into the feeder — the feeder
@@ -341,8 +342,21 @@ func (rw *responseWriter) finish() {
 			if f, ok := rw.w.(http.Flusher); ok {
 				f.Flush()
 			}
+			return
+		case 0:
+			// No status from upstream: nothing to translate.
+			return
 		}
-		return
+		// A non-200 upstream status on a streaming request. Fallthrough-
+		// eligible statuses (the same set llm_route retries on) are
+		// deliberately left uncommitted: llm_route only observes them and any
+		// bytes here would block the retry. Everything else (e.g. 400) is a
+		// final answer, so fall through to the buffered error path below —
+		// otherwise the status would reach the client with an empty body.
+		if rw.status == http.StatusTooManyRequests || rw.status == http.StatusNotFound ||
+			rw.status == http.StatusForbidden || rw.status >= 500 {
+			return
+		}
 	}
 	if rw.written {
 		return
