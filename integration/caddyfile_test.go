@@ -151,6 +151,62 @@ http://127.0.0.1:%d {
 	}
 }
 
+// TestLLMRouteModelVars checks llm_route exports the matched model to its
+// subchain as the llm.model request var (the name sent upstream, after the
+// rule's rewrite). Matchers and handlers inside the subchain can branch on
+// it.
+func TestLLMRouteModelVars(t *testing.T) {
+	cf := fmt.Sprintf(`{
+	admin localhost:%d
+	http_port %d
+	auto_https off
+}
+
+http://127.0.0.1:%d {
+	route /v1/messages {
+		llm_route {
+			model vendor/(.*) $1
+
+			route {
+				@gpt expression {http.vars.llm.model}.startsWith('gpt')
+				handle @gpt {
+					respond "codex {http.vars.llm.model}" 200
+				}
+				handle {
+					respond "chat {http.vars.llm.model}" 200
+				}
+			}
+		}
+	}
+}
+`, testPorts[1], testPorts[0], testPorts[0])
+
+	tester := caddytest.NewTester(t).WithDefaultOverrides(caddytest.Config{AdminPort: testPorts[1]})
+	tester.InitServer(cf, "caddyfile")
+
+	cases := map[string]string{
+		// rewritten model starts with gpt -> first handle block
+		"vendor/gpt-6-astra": "codex gpt-6-astra",
+		// rewritten model does not -> catch-all handle block
+		"vendor/glm-5.3": "chat glm-5.3",
+	}
+	for model, want := range cases {
+		resp, err := http.Post(httpBase()+"/v1/messages", "application/json",
+			strings.NewReader(fmt.Sprintf(`{"model":%q,"max_tokens":8,"messages":[]}`, model)))
+		if err != nil {
+			t.Fatalf("post %s: %v", model, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != 200 {
+			t.Fatalf("%s: status = %d (%s)", model, resp.StatusCode, body)
+		}
+		if got := string(body); got != want {
+			t.Errorf("%s: body = %q, want %q", model, got, want)
+		}
+	}
+}
+
 // TestFullChainCaddyfile runs the traced translation chain configured via a
 // Caddyfile — the Caddyfile twin of TestFullChainJSON.
 func TestFullChainCaddyfile(t *testing.T) {

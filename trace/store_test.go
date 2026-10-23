@@ -401,10 +401,10 @@ func TestUsageColumns(t *testing.T) {
 		ts       time.Time
 		usage    *Usage
 	}{
-		{"a", "mcli", base.Add(5 * time.Minute), &Usage{Input: 100, Cache: 900, Output: 10}},
-		{"b", "mcli", base.Add(40 * time.Minute), &Usage{Input: 200, Cache: 800, Output: 20}},
-		{"c", "friday", base.Add(70 * time.Minute), &Usage{Input: 300, Cache: 700, Output: 30}},
-		{"d", "mcli", base.Add(80 * time.Minute), nil}, // probe, no usage
+		{"a", "alpha", base.Add(5 * time.Minute), &Usage{Input: 100, Cache: 900, Output: 10}},
+		{"b", "alpha", base.Add(40 * time.Minute), &Usage{Input: 200, Cache: 800, Output: 20}},
+		{"c", "beta", base.Add(70 * time.Minute), &Usage{Input: 300, Cache: 700, Output: 30}},
+		{"d", "alpha", base.Add(80 * time.Minute), nil}, // probe, no usage
 	}
 	for _, r := range recs {
 		if err := s.RecordRequest(ctx, r.id, r.name, r.ts, 1, 200, 0, 0, r.usage, ""); err != nil {
@@ -449,7 +449,7 @@ func TestUsageColumns(t *testing.T) {
 	}
 
 	// 30-minute buckets split a/b; trace-name filter applies.
-	half, err := s.UsageSeries(ctx, 1800, time.Time{}, time.Time{}, "mcli")
+	half, err := s.UsageSeries(ctx, 1800, time.Time{}, time.Time{}, "alpha")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -479,7 +479,7 @@ func TestInProgressLifecycle(t *testing.T) {
 	ts := time.Now()
 
 	// Start: row exists, in_progress, no completion data.
-	if err := s.StartRequest(ctx, "t1", "mcli", ts); err != nil {
+	if err := s.StartRequest(ctx, "t1", "alpha", ts); err != nil {
 		t.Fatal(err)
 	}
 	list, _ := s.List(ctx, Query{})
@@ -491,7 +491,7 @@ func TestInProgressLifecycle(t *testing.T) {
 	}
 
 	// Complete: same row updated, not duplicated.
-	if err := s.RecordRequest(ctx, "t1", "mcli", ts, 500, 200, 100, 200, &Usage{Input: 1, Cache: 2, Output: 3}, "claude-x"); err != nil {
+	if err := s.RecordRequest(ctx, "t1", "alpha", ts, 500, 200, 100, 200, &Usage{Input: 1, Cache: 2, Output: 3}, "claude-x"); err != nil {
 		t.Fatal(err)
 	}
 	list, _ = s.List(ctx, Query{})
@@ -506,7 +506,7 @@ func TestInProgressLifecycle(t *testing.T) {
 	}
 
 	// RecordRequest without a preceding StartRequest falls back to insert.
-	if err := s.RecordRequest(ctx, "t2", "mcli", ts, 5, 200, 0, 0, nil, ""); err != nil {
+	if err := s.RecordRequest(ctx, "t2", "alpha", ts, 5, 200, 0, 0, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	list, _ = s.List(ctx, Query{})
@@ -516,7 +516,7 @@ func TestInProgressLifecycle(t *testing.T) {
 
 	// A second in-progress row stays in_progress across close; reopen marks
 	// it crashed.
-	if err := s.StartRequest(ctx, "t3", "mcli", ts); err != nil {
+	if err := s.StartRequest(ctx, "t3", "alpha", ts); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.close(); err != nil {
@@ -555,17 +555,17 @@ func TestCleanup(t *testing.T) {
 
 	// Three history files with content; the last is active.
 	for range 2 {
-		if err := s.Save(ctx, "t", "mcli", false, []byte(strings.Repeat("x", 1000))); err != nil {
+		if err := s.Save(ctx, "t", "alpha", false, []byte(strings.Repeat("x", 1000))); err != nil {
 			t.Fatal(err)
 		}
 		if err := s.rotate(); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := s.Save(ctx, "t", "mcli", false, []byte(strings.Repeat("y", 1000))); err != nil {
+	if err := s.Save(ctx, "t", "alpha", false, []byte(strings.Repeat("y", 1000))); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RecordRequest(ctx, "t", "mcli", time.Now(), 1, 200, 0, 3000, nil, ""); err != nil {
+	if err := s.RecordRequest(ctx, "t", "alpha", time.Now(), 1, 200, 0, 3000, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	filesBefore, _ := filepath.Glob(filepath.Join(dir, "history-*.raw"))
@@ -598,7 +598,7 @@ func TestCleanup(t *testing.T) {
 func TestCleanupDisabled(t *testing.T) {
 	s, dir := newTestStore(t)
 	defer s.close()
-	if err := s.Save(context.Background(), "t", "mcli", false, []byte("data")); err != nil {
+	if err := s.Save(context.Background(), "t", "alpha", false, []byte("data")); err != nil {
 		t.Fatal(err)
 	}
 	s.maxSize = 1

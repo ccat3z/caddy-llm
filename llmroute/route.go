@@ -160,6 +160,13 @@ func (r *Route) ServeHTTP(w http.ResponseWriter, req *http.Request, next caddyht
 	// body) alongside the clone's Body.
 	caddyllm.SetRequestBody(clone, cloneBody)
 
+	// Export the model name sent upstream (after the rule's rewrite) to the
+	// subchain via a request var, so handlers and matchers inside it can
+	// branch on it ({http.vars.llm.model}). Cleared again before any
+	// fallthrough so the next handler never sees a stale value.
+	ctx := clone.Context()
+	caddyhttp.SetVar(ctx, "llm.model", rewritten)
+
 	// Writer stack (response side, outermost first):
 	//   peekWriter — llm_route's fallthrough decision on the upstream status
 	// The subchain writes into the peek-wrapped real writer (translating
@@ -167,6 +174,11 @@ func (r *Route) ServeHTTP(w http.ResponseWriter, req *http.Request, next caddyht
 	// themselves).
 	pw := newPeekWriter(w)
 	err = r.sub.ServeHTTP(pw, clone, next)
+
+	// The subchain is done with the var: clear it (the clone shares the
+	// request's context, so this deletes it for the original as well) before
+	// control returns to the enclosing chain.
+	caddyhttp.SetVar(ctx, "llm.model", nil)
 
 	if err == nil && !isFallthroughStatus(pw.status()) {
 		pw.flushHeader()
