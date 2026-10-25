@@ -1,0 +1,69 @@
+{
+	"admin": {
+		"listen": "localhost:2019"
+	},
+	"apps": {
+		"http": {
+			"http_port": 8080,
+			"servers": {
+				"claude-proxy": {
+					"listen": [
+						":8080"
+					],
+					"automatic_https": {
+						"disable": true
+					},
+					"routes": [
+						{
+							"match": [
+								{
+									"path": [
+										"/v1/messages"
+									],
+									"method": [
+										"POST"
+									]
+								}
+							],
+							"handle": [
+								{
+									"handler": "imagefallback",
+									"pattern": "^glm-5\\.3$",
+									"fallback": "glm-5.3-flash"
+								},
+								{
+									"handler": "rewrite",
+									"uri": "/api/coding/paas/v4/chat/completions"
+								},
+								{
+									"handler": "claude2openai"
+								},
+								{
+									"handler": "reverse_proxy",
+									"headers": {
+										"request": {
+											"set": {
+												"Host": [
+													"open.bigmodel.cn"
+												]
+											}
+										}
+									},
+									"transport": {
+										"protocol": "http",
+										"tls": {}
+									},
+									"upstreams": [
+										{
+											"dial": "open.bigmodel.cn:443"
+										}
+									]
+								}
+							]
+						}
+					]
+				}
+			}
+		}
+	}
+}

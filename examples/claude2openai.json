@@ -7,7 +7,9 @@
 			"http_port": 8080,
 			"servers": {
 				"claude-proxy": {
-					"listen": [":8080"],
+					"listen": [
+						":8080"
+					],
 					"automatic_https": {
 						"disable": true
 					},
@@ -15,8 +17,12 @@
 						{
 							"match": [
 								{
-									"path": ["/v1/messages"],
-									"method": ["POST"]
+									"path": [
+										"/v1/messages"
+									],
+									"method": [
+										"POST"
+									]
 								}
 							],
 							"handle": [
@@ -29,6 +35,19 @@
 								},
 								{
 									"handler": "reverse_proxy",
+									"headers": {
+										"request": {
+											"set": {
+												"Host": [
+													"api.openai.com"
+												]
+											}
+										}
+									},
+									"transport": {
+										"protocol": "http",
+										"tls": {}
+									},
 									"upstreams": [
 										{
 											"dial": "api.openai.com:443"

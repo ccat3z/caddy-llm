@@ -24,7 +24,9 @@ http://:8080 {
 			route {
 				rewrite * /v1/messages
 				trace claude
-				reverse_proxy native.example.com:443
+				reverse_proxy https://native.example.com {
+				header_up Host {http.reverse_proxy.upstream.host}
+			}
 			}
 		}
 
@@ -40,7 +42,9 @@ http://:8080 {
 				trace glm {
 					cache_in_input
 				}
-				reverse_proxy open.bigmodel.cn:443
+				reverse_proxy https://open.bigmodel.cn {
+				header_up Host {http.reverse_proxy.upstream.host}
+			}
 			}
 		}
 	}

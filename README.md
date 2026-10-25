@@ -27,6 +27,9 @@ Runnable configurations in [`examples/`](examples/), all validated:
 
 - [`claude2openai.json`](examples/claude2openai.json) — minimal translation
   chain: one route, `rewrite` → `claude2openai` → `reverse_proxy`.
+- [`imagefallback.json`](examples/imagefallback.json) — the same chain with
+  `imagefallback` in front: image-bearing glm-5.3 requests are rewritten to
+  the vision-capable glm-5.3-flash.
 - [`traced-translation.json`](examples/traced-translation.json) — the same
   chain with `trace` on both sides of the translation and the traces API.
 - [`multi-upstream-fallback.json`](examples/multi-upstream-fallback.json) —
@@ -36,6 +39,7 @@ Runnable configurations in [`examples/`](examples/), all validated:
 Each has a Caddyfile twin (`.Caddyfile`):
 
 - [`claude2openai.Caddyfile`](examples/claude2openai.Caddyfile)
+- [`imagefallback.Caddyfile`](examples/imagefallback.Caddyfile)
 - [`traced-translation.Caddyfile`](examples/traced-translation.Caddyfile)
 - [`multi-upstream-fallback.Caddyfile`](examples/multi-upstream-fallback.Caddyfile)
 

@@ -15,6 +15,8 @@ http://:8080 {
 	route /v1/messages {
 		rewrite * /v1/chat/completions
 		claude2openai
-		reverse_proxy open.bigmodel.cn:443
+		reverse_proxy https://api.openai.com {
+			header_up Host {http.reverse_proxy.upstream.host}
+		}
 	}
 }

@@ -1,0 +1,25 @@
+# Image fallback chain: imagefallback -> rewrite -> claude2openai ->
+# reverse_proxy. Equivalent to imagefallback.json.
+#
+#	caddy-llm run --config examples/imagefallback.Caddyfile
+#
+# glm-5.3 reads text only; requests carrying an image (anywhere in their
+# history — tool results included) would be rejected outright. imagefallback
+# rewrites those requests' model to the vision-capable glm-5.3-flash and lets
+# every other request through untouched.
+
+{
+	admin localhost:2019
+	http_port 8080
+}
+
+http://:8080 {
+	route /v1/messages {
+		imagefallback ^glm-5\.3$ glm-5.3-flash
+		rewrite * /api/coding/paas/v4/chat/completions
+		claude2openai
+		reverse_proxy https://open.bigmodel.cn {
+			header_up Host {http.reverse_proxy.upstream.host}
+		}
+	}
+}
