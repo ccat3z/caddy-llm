@@ -1,10 +1,11 @@
 // assemble.ts — merge an SSE event stream back into a single logical
 // message for pretty display (like CPA's "assembled" view). Supports the
-// Claude Messages stream (message_start / content_block_* / message_delta)
-// and OpenAI chat.completion.chunk streams.
+// Claude Messages stream (message_start / content_block_* / message_delta),
+// OpenAI chat.completion.chunk streams, and OpenAI Responses streams
+// (response.* events).
 
 export interface Assembled {
-  format: 'claude' | 'openai'
+  format: 'claude' | 'openai' | 'openai-responses'
   events: number
   message: Record<string, unknown>
 }
@@ -40,6 +41,9 @@ export function assembleSSE(body: string): Assembled | null {
   }
   if (parsed.some((p) => p?.object === 'chat.completion.chunk')) {
     return assembleOpenAI(parsed)
+  }
+  if (parsed.some((p) => typeof p?.type === 'string' && p.type.startsWith('response.'))) {
+    return assembleResponses(parsed)
   }
   if (parsed.some((p) => p?.type === 'message_start' || p?.type === 'content_block_start')) {
     return assembleClaude(parsed)
@@ -176,4 +180,77 @@ function assembleOpenAI(chunks: any[]): Assembled | null {
   message.choices = [{ index: 0, message: msgContent, finish_reason: finishReason ?? null }]
   if (usage) message.usage = usage
   return { format: 'openai', events: chunks.length, message }
+}
+
+// assembleResponses rebuilds an OpenAI Responses object from its stream.
+// The terminal event carries the authoritative response (output, usage,
+// status); streamed item/delta events are the fallback for truncated
+// streams. output_index preserves the upstream item order.
+function assembleResponses(chunks: any[]): Assembled | null {
+  let base: Record<string, any> | undefined
+  const items = new Map<number, Record<string, any>>()
+  const text = new Map<string, string>() // "<output_index>:<content_index>" -> text
+  const summary = new Map<string, string>() // "<output_index>:<summary_index>" -> text
+  const args = new Map<number, string>()
+
+  const append = (m: Map<string, string>, key: string, delta: unknown) => {
+    if (typeof delta === 'string' && delta) m.set(key, (m.get(key) ?? '') + delta)
+  }
+
+  for (const c of chunks) {
+    if (c.response && typeof c.response === 'object') base = c.response
+    const idx: number = typeof c.output_index === 'number' ? c.output_index : 0
+    switch (c.type) {
+      case 'response.output_item.added':
+      case 'response.output_item.done':
+        // done supersedes added: it carries the complete item.
+        if (c.item && typeof c.item === 'object') items.set(idx, { ...c.item })
+        break
+      case 'response.output_text.delta':
+      case 'response.refusal.delta':
+      case 'response.reasoning_text.delta':
+        append(text, `${idx}:${c.content_index ?? 0}`, c.delta)
+        break
+      case 'response.reasoning_summary_text.delta':
+        append(summary, `${idx}:${c.summary_index ?? 0}`, c.delta)
+        break
+      case 'response.function_call_arguments.delta':
+        if (typeof c.delta === 'string') args.set(idx, (args.get(idx) ?? '') + c.delta)
+        break
+    }
+  }
+
+  const parts = (m: Map<string, string>, idx: number, type: string) => {
+    const out: Record<string, unknown>[] = []
+    for (const [key, value] of m) {
+      const [i, part] = key.split(':').map(Number)
+      if (i === idx && value) out[part] = { type, text: value }
+    }
+    return out.filter(Boolean)
+  }
+
+  for (const [idx, item] of items) {
+    if (item.type === 'reasoning') {
+      if (!item.summary?.length) {
+        const s = parts(summary, idx, 'summary_text')
+        if (s.length > 0) item.summary = s
+      }
+      if (!item.content?.length) {
+        const t = parts(text, idx, 'reasoning_text')
+        if (t.length > 0) item.content = t
+      }
+    } else if (item.type === 'function_call') {
+      if (!item.arguments && args.has(idx)) item.arguments = args.get(idx)
+    } else if (!item.content?.length) {
+      const t = parts(text, idx, 'output_text')
+      if (t.length > 0) item.content = t
+    }
+  }
+
+  const streamed = [...items.entries()].sort(([a], [b]) => a - b).map(([, item]) => item)
+  if (!base && streamed.length === 0) return null
+
+  const message: Record<string, unknown> = base ? { ...base } : { object: 'response' }
+  message.output = Array.isArray(base?.output) && base.output.length > 0 ? base.output : streamed
+  return { format: 'openai-responses', events: chunks.length, message }
 }
