@@ -66,6 +66,35 @@ func TestExtractUsageOpenAISSE(t *testing.T) {
 	}
 }
 
+func TestExtractUsageResponsesJSON(t *testing.T) {
+	body := `{"id":"resp_1","object":"response","status":"completed","usage":{"input_tokens":14979,"input_tokens_details":{"cached_tokens":14949,"cache_write_tokens":27},"output_tokens":6,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":14985}}`
+	u := extractUsage([]byte(body))
+	if u == nil {
+		t.Fatal("no usage")
+	}
+	if u.Input != 14979 || u.Cache != 14949 || u.Output != 6 {
+		t.Errorf("usage = %+v", u)
+	}
+}
+
+func TestExtractUsageResponsesSSE(t *testing.T) {
+	body := strings.Join([]string{
+		`event: response.created`,
+		`data: {"type":"response.created","response":{"id":"resp_1","object":"response","status":"in_progress","output":[],"usage":null}}`,
+		``,
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","object":"response","status":"completed","output":[],"usage":{"input_tokens":14979,"input_tokens_details":{"cached_tokens":14949,"cache_write_tokens":27},"output_tokens":6,"total_tokens":14985}}}`,
+		``,
+	}, "\n")
+	u := extractUsage([]byte(body))
+	if u == nil {
+		t.Fatal("no usage")
+	}
+	if u.Input != 14979 || u.Cache != 14949 || u.Output != 6 {
+		t.Errorf("usage = %+v", u)
+	}
+}
+
 func TestExtractUsageNone(t *testing.T) {
 	for _, body := range []string{
 		``,

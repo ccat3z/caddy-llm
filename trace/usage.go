@@ -42,7 +42,8 @@ func (b *tailBuffer) Write(p []byte) {
 // the body carries no usage (errors, probes, truncated streams). Detection
 // is format-based, independent of CacheInInput: Claude JSON/SSE reports
 // input_tokens excluding cache; OpenAI chat-completions (JSON or SSE chunks)
-// reports prompt_tokens including cached_tokens.
+// reports prompt_tokens including cached_tokens; OpenAI Responses reports
+// input_tokens including cached_tokens.
 func extractUsage(body []byte) *Usage {
 	trimmed := bytes.TrimSpace(body)
 	if len(trimmed) == 0 {
@@ -50,6 +51,9 @@ func extractUsage(body []byte) *Usage {
 	}
 	if trimmed[0] == '{' && json.Valid(trimmed) {
 		// Whole JSON body (buffered non-streaming response).
+		if u := responsesBodyUsage(trimmed); u != nil {
+			return u
+		}
 		if u := openAIUsage(jsonBodyUsage(trimmed)); u != nil {
 			return u
 		}
@@ -60,7 +64,8 @@ func extractUsage(body []byte) *Usage {
 
 // extractUsageSSE scans data: payloads and keeps usage from the events that
 // carry it: Claude message_start (input/cache) + message_delta (final
-// output), or the last OpenAI chunk with a usage field.
+// output), an OpenAI Responses event with a response.usage object, or the
+// last OpenAI chat-completions chunk with a usage field.
 func extractUsageSSE(body []byte) *Usage {
 	var in, cache, out int
 	seen := false
@@ -79,7 +84,10 @@ func extractUsageSSE(body []byte) *Usage {
 			continue
 		}
 		var ev struct {
-			Type    string `json:"type"`
+			Type     string `json:"type"`
+			Response *struct {
+				Usage json.RawMessage `json:"usage"`
+			} `json:"response"`
 			Message struct {
 				Usage struct {
 					InputTokens              int `json:"input_tokens"`
@@ -96,6 +104,15 @@ func extractUsageSSE(body []byte) *Usage {
 		}
 		if err := json.Unmarshal(payload, &ev); err != nil {
 			continue
+		}
+		// OpenAI Responses events (response.created/in_progress/completed/…)
+		// nest usage under "response".
+		if ev.Response != nil {
+			if u := responsesUsage(ev.Response.Usage); u != nil {
+				in, cache, out = u.Input, u.Cache, u.Output
+				seen = true
+				continue
+			}
 		}
 		switch ev.Type {
 		case "message_start":
@@ -134,6 +151,20 @@ func jsonBodyUsage(doc []byte) json.RawMessage {
 	return probe.Usage
 }
 
+// responsesBodyUsage digs usage out of an OpenAI Responses response object.
+// The object discriminator distinguishes it from a Claude message, which also
+// reports input_tokens/output_tokens.
+func responsesBodyUsage(doc []byte) *Usage {
+	var probe struct {
+		Object string          `json:"object"`
+		Usage  json.RawMessage `json:"usage"`
+	}
+	if err := json.Unmarshal(doc, &probe); err != nil || probe.Object != "response" {
+		return nil
+	}
+	return responsesUsage(probe.Usage)
+}
+
 // openAIUsage parses an OpenAI chat-completion usage object (prompt_tokens
 // includes cached_tokens). Returns nil if it isn't one.
 func openAIUsage(raw json.RawMessage) *Usage {
@@ -151,6 +182,27 @@ func openAIUsage(raw json.RawMessage) *Usage {
 		return nil
 	}
 	return &Usage{Input: u.PromptTokens, Cache: u.PromptDetails.CachedTokens, Output: u.CompletionTokens}
+}
+
+// responsesUsage parses an OpenAI Responses usage object. Like chat
+// completions, input_tokens includes cached tokens (input_tokens_details.
+// cached_tokens); cache writes stay inside input, matching Anthropic
+// semantics.
+func responsesUsage(raw json.RawMessage) *Usage {
+	if len(raw) == 0 {
+		return nil
+	}
+	var u struct {
+		InputTokens        int `json:"input_tokens"`
+		OutputTokens       int `json:"output_tokens"`
+		InputTokensDetails struct {
+			CachedTokens int `json:"cached_tokens"`
+		} `json:"input_tokens_details"`
+	}
+	if err := json.Unmarshal(raw, &u); err != nil || (u.InputTokens == 0 && u.OutputTokens == 0) {
+		return nil
+	}
+	return &Usage{Input: u.InputTokens, Cache: u.InputTokensDetails.CachedTokens, Output: u.OutputTokens}
 }
 
 // claudeUsage parses a Claude Messages usage object (input_tokens excludes

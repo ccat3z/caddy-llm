@@ -15,7 +15,7 @@ Configure via JSON (`caddy-llm run --config caddy.json`) or Caddyfile
 |---|---|
 | `http.handlers.claude2openai` | Translates Anthropic request/response bodies to OpenAI chat-completions and back. Path routing and upstream-path rewriting are left to route matchers and the `rewrite` handler; forwarding to `reverse_proxy`. |
 | `http.handlers.llm_route` | Model-based upstream routing with fallthrough: each block matches the request's model (literal or anchored regex with rewrite), runs its own subchain on a cloned request, and falls through to the next block on 429/404/5xx or subchain errors. |
-| `http.handlers.trace` | Captures the request/response passing through it (both sides of a translation when chained) and records them to the trace store. Extracts token usage (input / cache / output, three independent counts) from the response; `cache_in_input: true` when the tracer's upstream counts cache inside input (OpenAI-style `prompt_tokens` — cache is then subtracted so the store is always independent). |
+| `http.handlers.trace` | Captures the request/response passing through it (both sides of a translation when chained) and records them to the trace store. Extracts token usage (input / cache / output, three independent counts) from the response; `cache_in_input: true` when the tracer's upstream counts cache inside input (OpenAI-style `prompt_tokens` or Responses `input_tokens` — cache is then subtracted so the store is always independent). |
 | `http.handlers.llm_tracer_api` | HTTP query API for recorded traces and token-usage time series. |
 | [`web/`](web/) | React dashboard over the traces API: stacked token-usage time series and the request event table with raw HTTP exchanges. Embedded into the binary (`go:embed`) and served by `llm_tracer_api` at `{mount}/ui/`. |
 | `llm_tracer` (app) | Trace persistence: raw replayable HTTP messages in rolling `history-*.raw` files + SQLite index, always under caddy's data directory (`caddy.AppDataDir()/llm-tracer`). `max_size` (default `10G`, 0 disables) caps the directory: the oldest history files are deleted on overflow; summary rows (and token stats) survive. |
@@ -200,12 +200,14 @@ The handler is prefix-agnostic: mount it at any path with `rewrite`'s
   cleanup.
 
 Token accounting: the `trace` handler parses usage out of the response
-(Claude and OpenAI formats, streaming and buffered). Upstreams whose
-reported input already includes cache tokens (OpenAI-style `prompt_tokens`,
-e.g. a chat-completions-side tracer) should set `cache_in_input: true` so the
-store always holds three independent counts; Claude-native upstreams report
-`input_tokens` excluding cache already (leave it false). Cache counts read
-tokens only — cache writes stay inside input, matching Anthropic semantics.
+(Claude Messages, OpenAI chat-completions, and OpenAI Responses; streaming
+and buffered). Upstreams whose reported input already includes cache tokens
+(OpenAI-style `prompt_tokens` or Responses `input_tokens`, e.g. a
+chat-completions- or Responses-side tracer) should set `cache_in_input: true`
+so the store always holds three independent counts; Claude-native upstreams
+report `input_tokens` excluding cache already (leave it false). Cache counts
+read tokens only — cache writes stay inside input, matching Anthropic
+semantics.
 
 ## Build
 
