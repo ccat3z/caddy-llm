@@ -1219,13 +1219,11 @@ func checkBufferedReplay(t *testing.T, fx fixture, body string) {
 
 // checkErrorReplay verifies an upstream error translated to a Claude error.
 //
-// For non-streaming requests the handler writes the translated error itself.
-// For streaming requests the handler deliberately commits NOTHING (not even
-// the status): inside llm_route the error status travels via ObserveStatus so
-// the route can fall through to a fallback with the pristine request. The
-// replay mimics that contract: the status must be observed, no bytes may
-// reach the client, and the error envelope the final fallback would emit
-// (TranslateError) must match expectations.
+// The handler always writes the translated envelope. For streaming requests
+// inside llm_route that envelope goes into the peek writer, which holds it
+// back (nothing committed) so the route can still fall through; the observing
+// recorder used here sees the write directly, which is the same bytes the peek
+// writer would replay if every fallback failed.
 func checkErrorReplay(t *testing.T, fx fixture, rec *observingRecorder) {
 	t.Helper()
 	wantType, wantMsg := expectedError(fx.status(), fx.upstreamBodyBytes(t))
@@ -1263,28 +1261,10 @@ func checkErrorReplay(t *testing.T, fx fixture, rec *observingRecorder) {
 	if len(rec.observed) == 0 || rec.observed[len(rec.observed)-1] != fx.status() {
 		t.Errorf("observed statuses = %v, want last %d", rec.observed, fx.status())
 	}
-	if fallthroughStatus(fx.status()) {
-		// Fallthrough-eligible: nothing may be committed so the retry runs.
-		if rec.Body.Len() > 0 {
-			t.Errorf("bytes committed on a fallthrough error: %s", truncStr(rec.Body.String(), 200))
-		}
-		got := TranslateError(fx.status(), fx.upstreamBodyBytes(t))
-		assertErrEnvelope(got)
-		return
-	}
-	// Final (non-fallthrough) error: the translated envelope must reach the
-	// client instead of a bare status with an empty body.
 	if rec.Code != fx.status() {
 		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, fx.status(), truncStr(rec.Body.String(), 400))
 	}
 	assertErrEnvelope(rec.Body.Bytes())
-}
-
-// fallthroughStatus mirrors llmroute.isFallthroughStatus: the statuses
-// llm_route retries on, for which streaming errors must stay uncommitted.
-func fallthroughStatus(code int) bool {
-	return code == http.StatusTooManyRequests || code == http.StatusNotFound ||
-		code == http.StatusForbidden || code >= 500
 }
 
 // expectedError independently derives the Claude error type/message from an

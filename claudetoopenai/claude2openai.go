@@ -347,16 +347,11 @@ func (rw *responseWriter) finish() {
 			// No status from upstream: nothing to translate.
 			return
 		}
-		// A non-200 upstream status on a streaming request. Fallthrough-
-		// eligible statuses (the same set llm_route retries on) are
-		// deliberately left uncommitted: llm_route only observes them and any
-		// bytes here would block the retry. Everything else (e.g. 400) is a
-		// final answer, so fall through to the buffered error path below —
-		// otherwise the status would reach the client with an empty body.
-		if rw.status == http.StatusTooManyRequests || rw.status == http.StatusNotFound ||
-			rw.status == http.StatusForbidden || rw.status >= 500 {
-			return
-		}
+		// A non-200 upstream status on a streaming request: translate it into
+		// the buffered error path below like any other error. Inside llm_route
+		// the peek writer holds this response back, so a fallthrough still
+		// retries cleanly; if the fallthrough is exhausted, llm_route replays
+		// the envelope instead of leaving the client with a bare status.
 	}
 	if rw.written {
 		return
