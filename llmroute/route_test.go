@@ -138,6 +138,57 @@ func TestServeHTTPNoMatchPassesThrough(t *testing.T) {
 	}
 }
 
+// TestPeekWriterReplay locks the exhausted-fallthrough behavior: the failed
+// attempt's status and body are kept, and replay writes them through the real
+// writer when no fallback responded.
+func TestPeekWriterReplay(t *testing.T) {
+	rec := httptest.NewRecorder()
+	rec.Header().Set("X-Pre-Existing", "keep-me")
+	pw := newPeekWriter(rec)
+	pw.Header().Set("Content-Type", "application/json")
+	pw.WriteHeader(http.StatusTooManyRequests)
+	body := []byte(`{"error":"limit"}`)
+	if _, err := pw.Write(body); err != nil {
+		t.Fatal(err)
+	}
+	pw.saveFailed()
+	pw.discard()
+
+	if rec.Body.Len() != 0 {
+		t.Fatalf("failed response leaked before replay: %q", rec.Body.String())
+	}
+	if !pw.replayFailed(rec) {
+		t.Fatal("nothing to replay")
+	}
+	if rec.Code != http.StatusTooManyRequests {
+		t.Errorf("status = %d", rec.Code)
+	}
+	if got := rec.Body.String(); got != string(body) {
+		t.Errorf("body = %q", got)
+	}
+	if got := rec.Header().Get("X-Pre-Existing"); got != "keep-me" {
+		t.Errorf("pre-existing header lost: %q", got)
+	}
+	if got, want := rec.Header().Get("Content-Length"), "17"; got != want {
+		t.Errorf("Content-Length = %q, want %q", got, want)
+	}
+}
+
+// TestPeekWriterReplayNothing locks that a subchain error with no response
+// has nothing to replay.
+func TestPeekWriterReplayNothing(t *testing.T) {
+	rec := httptest.NewRecorder()
+	pw := newPeekWriter(rec)
+	pw.saveFailed()
+	pw.discard()
+	if pw.replayFailed(rec) {
+		t.Error("replayed a response that was never written")
+	}
+	if rec.Body.Len() != 0 {
+		t.Errorf("wrote %q", rec.Body.String())
+	}
+}
+
 // TestPeekWriterHeaderRestoreOnDiscard locks bug-fix #1: a failed attempt's
 // upstream headers (Added into the shared map) must not survive into the
 // fallback's response — the wire saw duplicate Content-Length before.

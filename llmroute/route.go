@@ -5,7 +5,10 @@
 // subchain on a cloned request; if the upstream answers 429/404/5xx (or the
 // subchain errors), the response is discarded and the original request falls
 // through to the next handler in the chain (typically the next llm_route,
-// i.e. the next-lower-priority upstream).
+// i.e. the next-lower-priority upstream). The fallback's response also has to
+// be a 2xx to win: if it fails too, the failed attempt's own response is
+// replayed, so the client sees the first upstream error instead of the
+// terminal handler's synthesized 404.
 package llmroute
 
 import (
@@ -15,6 +18,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig"
@@ -197,15 +201,39 @@ func (r *Route) ServeHTTP(w http.ResponseWriter, req *http.Request, next caddyht
 		return err
 	}
 
-	// Nothing reached the client: discard the held-back response, restore the
-	// header map, and fall through with the pristine original request.
+	// Nothing reached the client: keep the attempt for replay, discard the
+	// held-back response, restore the header map, and fall through with the
+	// pristine original request.
+	pw.saveFailed()
 	pw.discard()
 	// Re-arm the body for whatever runs next: this leg's upstream may have
 	// consumed the shared Read cursor (see the fresh cursor above).
 	if jb, ok := req.Body.(*caddyllm.JsonReqBody); ok {
 		caddyllm.SetRequestBody(req, jb.Fresh())
 	}
-	return next.ServeHTTP(w, req)
+	// Hold the fallback chain's response back too: only a 2xx replaces this
+	// leg's error. If the fallback fails as well, the client keeps the first
+	// error — the primary upstream's 429/5xx is the one worth retrying on.
+	nw := newPeekWriter(w)
+	nw.holdNon2xx = true
+	ferr := next.ServeHTTP(nw, req)
+	if isSuccessStatus(nw.status()) {
+		// The fallback answered; it may have observed its status instead of
+		// committing it, so flush what it held.
+		nw.flushHeader()
+		return ferr
+	}
+	nw.saveFailed()
+	nw.discard()
+	if pw.replayFailed(w) {
+		return nil
+	}
+	// This leg produced no response at all (subchain error): the fallback's
+	// held response is still better than the terminal error.
+	if nw.replayFailed(w) {
+		return nil
+	}
+	return ferr
 }
 
 // match returns the first matching rule and the rewritten model name.
@@ -277,7 +305,23 @@ type peekWriter struct {
 	held [][]byte
 	// savedHeader is the header map as it was before the subchain ran.
 	savedHeader http.Header
+
+	// holdNon2xx holds every non-2xx response back, not just the fallthrough
+	// statuses. llm_route uses it for the fallback chain so a fallback error
+	// can still be replaced by the first leg's error.
+	holdNon2xx bool
+
+	// failed preserves the failed attempt's response so llm_route can replay
+	// it when the fallthrough chain produces nothing of its own.
+	failStatus    int
+	failHeader    http.Header
+	failBody      []byte
+	failTruncated bool
 }
+
+// maxReplayBody bounds the failed attempt's body kept for replay. Error
+// bodies are small; larger ones are replayed status-only rather than buffered.
+const maxReplayBody = 1 << 20
 
 // newPeekWriter wraps w and snapshots its header map for fallthrough restores.
 func newPeekWriter(w http.ResponseWriter) *peekWriter {
@@ -293,10 +337,18 @@ func (pw *peekWriter) WriteHeader(code int) {
 	}
 	pw.wroteHeader = true
 	pw.code = code
-	if isFallthroughStatus(code) {
-		return // hold the header back; llm_route will fall through
+	if pw.hold(code) {
+		return // hold the header back; llm_route decides what to send
 	}
 	pw.flushHeader()
+}
+
+// hold reports whether a status must be held back instead of committed.
+func (pw *peekWriter) hold(code int) bool {
+	if isFallthroughStatus(code) {
+		return true
+	}
+	return pw.holdNon2xx && !isSuccessStatus(code)
 }
 
 // ObserveStatus records a status for fallthrough decisions WITHOUT going
@@ -314,8 +366,10 @@ func (pw *peekWriter) Write(p []byte) (int, error) {
 		pw.WriteHeader(http.StatusOK)
 	}
 	if !pw.headerSent {
-		if pw.code != 0 && isFallthroughStatus(pw.code) {
-			// a fallthrough status was observed: drop the body
+		if pw.code != 0 && pw.hold(pw.code) {
+			// The status is held back: keep the body for a possible replay,
+			// but do not send it yet.
+			pw.bufferFailed(p)
 			pw.discarded += int64(len(p))
 			return len(p), nil
 		}
@@ -327,6 +381,61 @@ func (pw *peekWriter) Write(p []byte) (int, error) {
 	return pw.ResponseWriter.Write(p)
 }
 
+// bufferFailed retains the failed attempt's body (up to maxReplayBody) so it
+// can be replayed if the fallthrough chain has nothing to offer.
+func (pw *peekWriter) bufferFailed(p []byte) {
+	if pw.failTruncated || len(p) == 0 {
+		return
+	}
+	if len(pw.failBody)+len(p) > maxReplayBody {
+		pw.failTruncated = true
+		pw.failBody = nil
+		return
+	}
+	pw.failBody = append(pw.failBody, p...)
+}
+
+// saveFailed snapshots the failed attempt's status and response headers
+// before discard restores the shared header map. The body was already kept
+// by Write.
+func (pw *peekWriter) saveFailed() {
+	if pw.code == 0 {
+		return
+	}
+	pw.failStatus = pw.code
+	pw.failHeader = pw.Header().Clone()
+}
+
+// replayFailed writes the failed attempt's response through w. It reports
+// whether there was anything to replay.
+func (pw *peekWriter) replayFailed(w http.ResponseWriter) bool {
+	if pw.failStatus == 0 {
+		return false
+	}
+	h := w.Header()
+	for k := range h {
+		delete(h, k)
+	}
+	for k, vs := range pw.failHeader {
+		h[k] = vs
+	}
+	if len(pw.failBody) == 0 || pw.failTruncated {
+		// The body was never materialized (streaming translators observe the
+		// status and write nothing) or was too large to keep: don't promise
+		// bytes or an encoding the client will never get.
+		h.Del("Content-Length")
+		h.Del("Content-Encoding")
+		h.Del("Transfer-Encoding")
+	} else {
+		h.Set("Content-Length", strconv.Itoa(len(pw.failBody)))
+	}
+	w.WriteHeader(pw.failStatus)
+	if len(pw.failBody) > 0 && !pw.failTruncated {
+		_, _ = w.Write(pw.failBody)
+	}
+	return true
+}
+
 // status returns the recorded status (0 if none was written).
 func (pw *peekWriter) status() int { return pw.code }
 
@@ -335,7 +444,7 @@ func (pw *peekWriter) flushHeader() {
 	if pw.headerSent || !pw.wroteHeader {
 		return
 	}
-	if isFallthroughStatus(pw.code) {
+	if pw.hold(pw.code) {
 		// The subchain finished without llm_route falling through (e.g. it
 		// handled the error itself): emit what we held back.
 		pw.held = nil
@@ -378,6 +487,12 @@ func (pw *peekWriter) Flush() {
 }
 
 var _ http.Flusher = (*peekWriter)(nil)
+
+// isSuccessStatus reports whether a fallback response is a usable answer (a
+// 2xx). Anything else lets llm_route keep the first leg's error instead.
+func isSuccessStatus(code int) bool {
+	return code >= 200 && code < 300
+}
 
 // ---------- Caddyfile ----------
 

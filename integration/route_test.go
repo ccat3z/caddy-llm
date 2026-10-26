@@ -193,15 +193,50 @@ func TestLLMRoutePriorityAndFallthrough(t *testing.T) {
 		}
 	})
 
-	t.Run("both fail -> 404", func(t *testing.T) {
-		mc.setStatus(http.StatusInternalServerError)
+	t.Run("both fail -> first upstream's error", func(t *testing.T) {
+		// Each leg's error is held back and a failing fallback does not
+		// replace it: the first (highest-priority) upstream's status wins, not
+		// the last one's and not the chain terminator's 404.
+		mc.setStatus(http.StatusTooManyRequests)
 		glm.setStatus(http.StatusInternalServerError)
 		defer func() { mc.setStatus(http.StatusOK); glm.setStatus(http.StatusOK) }()
 		status, body := postModel(t, "glm-5.2")
-		if status != 404 {
-			t.Fatalf("status = %d body=%s", status, body)
+		if status != http.StatusTooManyRequests {
+			t.Fatalf("status = %d body=%s, want first leg's 429", status, body)
 		}
 	})
+}
+
+// TestLLMRouteExhaustedFallthroughReplaysError locks the case where the only
+// matching block's upstream fails (429) but no later block matches the model:
+// discarding the response and falling through used to let the terminal error
+// handler answer 404, so the client never saw the upstream error (and no
+// tracer recorded it). The failed attempt must be replayed instead.
+func TestLLMRouteExhaustedFallthroughReplaysError(t *testing.T) {
+	mc := &upstreamLog{status: http.StatusTooManyRequests}
+	mcSrv := httptest.NewServer(mc.handler())
+	defer mcSrv.Close()
+
+	tester := caddytest.NewTester(t).WithDefaultOverrides(caddytest.Config{AdminPort: testPorts[1]})
+	tester.InitServer(jsonConfig(messagesRoute(
+		llmRoute([]map[string]any{
+			modelRule(`mc/(.*)`, "$1"),
+		}, rewriteHandler("/mc/chat"), proxyHandler(dial(mcSrv.URL), "Bearer mc-key")),
+		// Returns an error instead of writing a response, like the site-level
+		// `error 404` in the shipped Caddyfile.
+		map[string]any{"handler": "error", "status_code": 404},
+	)), "json")
+
+	status, body := postModel(t, "mc/glm-5.2")
+	if status != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429 (body %q)", status, body)
+	}
+	if !strings.Contains(body, "from-mock") {
+		t.Errorf("replayed body = %q", body)
+	}
+	if mc.count() != 1 {
+		t.Errorf("upstream hits = %d, want 1", mc.count())
+	}
 }
 
 // TestLLMRouteWithTranslation mixes a Claude-native upstream (no
@@ -290,6 +325,40 @@ func TestLLMRouteSSEStreaming(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("stream missing %q; got %q", want, got)
 		}
+	}
+}
+
+// TestLLMRouteSSEErrorReplaysError covers the streaming variant of the
+// exhausted-fallthrough case: the client must see the first leg's 429 with the
+// translated error envelope (not the terminal 404, and not an empty body).
+func TestLLMRouteSSEErrorReplaysError(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"error":{"message":"slow down","type":"rate_limit_error"}}`)
+	}))
+	defer up.Close()
+
+	tester := caddytest.NewTester(t).WithDefaultOverrides(caddytest.Config{AdminPort: testPorts[1]})
+	tester.InitServer(jsonConfig(messagesRoute(
+		llmRoute([]map[string]any{
+			modelRule("sse-model", ""),
+		}, rewriteHandler("/v1/chat/completions"), claude2openaiHandler(), proxyHandler(dial(up.URL), "")),
+		map[string]any{"handler": "error", "status_code": 404},
+	)), "json")
+
+	resp, err := http.Post(httpBase()+"/v1/messages", "application/json",
+		strings.NewReader(`{"model":"sse-model","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429 (body %q)", resp.StatusCode, b)
+	}
+	if !strings.Contains(string(b), "slow down") {
+		t.Errorf("replayed body = %q, want the translated error envelope", b)
 	}
 }
 
