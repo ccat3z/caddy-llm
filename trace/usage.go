@@ -20,149 +20,226 @@ type Usage struct {
 	Output int `json:"output_tokens"`
 }
 
-// tailSize bounds how much of the response body the tracer keeps for usage
-// extraction. Usage is always at the end — the final message_delta (Claude
-// SSE), the terminal chunk (OpenAI SSE), or the usage field (JSON bodies) —
-// so a tail window suffices even for large streams.
-const tailSize = 64 << 10
+// maxSSEEventSize bounds one buffered SSE event. The event carrying usage can
+// be large — an OpenAI Responses terminal event embeds the whole response
+// object (tool definitions, instructions, encrypted reasoning) and routinely
+// exceeds 64KB — so usage cannot be recovered from a fixed tail window. The
+// scanner keeps only the current event instead.
+const maxSSEEventSize = 8 << 20
 
-// tailBuffer keeps the last tailSize bytes of a stream.
-type tailBuffer struct {
-	buf []byte
+// maxJSONBodySize bounds a buffered non-streaming JSON body.
+const maxJSONBodySize = 8 << 20
+
+// usageScanner incrementally extracts the reported usage from a response
+// body. SSE bodies are scanned line by line as they arrive, so the buffer
+// never has to hold the whole stream; a buffered JSON body is parsed once it
+// is complete.
+type usageScanner struct {
+	mode     scanMode
+	json     []byte // buffered JSON body
+	line     []byte // current (possibly partial) SSE line
+	overflow bool   // current line exceeded maxSSEEventSize
+	state    usageState
 }
 
-func (b *tailBuffer) Write(p []byte) {
-	b.buf = append(b.buf, p...)
-	if len(b.buf) > tailSize {
-		b.buf = b.buf[len(b.buf)-tailSize:]
-	}
-}
+type scanMode uint8
 
-// usage extracts the reported usage from a response body. Returns nil when
-// the body carries no usage (errors, probes, truncated streams). Detection
-// is format-based, independent of CacheInInput: Claude JSON/SSE reports
-// input_tokens excluding cache; OpenAI chat-completions (JSON or SSE chunks)
-// reports prompt_tokens including cached_tokens; OpenAI Responses reports
-// input_tokens including cached_tokens.
-func extractUsage(body []byte) *Usage {
-	trimmed := bytes.TrimSpace(body)
-	if len(trimmed) == 0 {
-		return nil
-	}
-	if trimmed[0] == '{' && json.Valid(trimmed) {
-		// Whole JSON body (buffered non-streaming response).
-		if u := responsesBodyUsage(trimmed); u != nil {
-			return u
-		}
-		if u := openAIUsage(jsonBodyUsage(trimmed)); u != nil {
-			return u
-		}
-		return claudeUsage(jsonBodyUsage(trimmed))
-	}
-	return extractUsageSSE(trimmed)
-}
+const (
+	scanUnknown scanMode = iota
+	scanJSON
+	scanSSE
+	scanIgnored
+)
 
-// extractUsageSSE scans data: payloads and keeps usage from the events that
-// carry it: Claude message_start (input/cache) + message_delta (final
-// output), an OpenAI Responses event with a response.usage object, or the
-// last OpenAI chat-completions chunk with a usage field.
-func extractUsageSSE(body []byte) *Usage {
-	var in, cache, out int
-	seen := false
-	for _, line := range bytes.Split(body, []byte("\n")) {
-		line = bytes.TrimSuffix(line, []byte("\r"))
-		if !bytes.HasPrefix(line, []byte("data: ")) {
-			continue
-		}
-		payload := bytes.TrimPrefix(line, []byte("data: "))
-		if bytes.Equal(payload, []byte("[DONE]")) || !json.Valid(payload) {
-			continue
-		}
-		if u := openAIUsage(jsonBodyUsage(payload)); u != nil {
-			in, cache, out = u.Input, u.Cache, u.Output
-			seen = true
-			continue
-		}
-		var ev struct {
-			Type     string `json:"type"`
-			Response *struct {
-				Usage json.RawMessage `json:"usage"`
-			} `json:"response"`
-			Message struct {
-				Usage struct {
-					InputTokens              int `json:"input_tokens"`
-					CacheReadInputTokens     int `json:"cache_read_input_tokens"`
-					CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
-				} `json:"usage"`
-			} `json:"message"`
-			Usage struct {
-				InputTokens              int `json:"input_tokens"`
-				OutputTokens             int `json:"output_tokens"`
-				CacheReadInputTokens     int `json:"cache_read_input_tokens"`
-				CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
-			} `json:"usage"`
-		}
-		if err := json.Unmarshal(payload, &ev); err != nil {
-			continue
-		}
-		// OpenAI Responses events (response.created/in_progress/completed/…)
-		// nest usage under "response".
-		if ev.Response != nil {
-			if u := responsesUsage(ev.Response.Usage); u != nil {
-				in, cache, out = u.Input, u.Cache, u.Output
-				seen = true
+func (s *usageScanner) Write(p []byte) {
+	if s.mode == scanUnknown {
+		for _, b := range p {
+			switch b {
+			case ' ', '\t', '\r', '\n':
 				continue
+			case '{', '[':
+				s.mode = scanJSON
+			default:
+				s.mode = scanSSE
 			}
+			break
 		}
-		switch ev.Type {
-		case "message_start":
-			in = ev.Message.Usage.InputTokens
-			cache = ev.Message.Usage.CacheReadInputTokens
-			seen = true
-		case "message_delta":
-			// Upstreams report the full triple here too; take it when the
-			// window lost message_start (tail capture) — nonzero fields win.
-			if ev.Usage.InputTokens != 0 || in == 0 {
-				in = ev.Usage.InputTokens
-			}
-			if ev.Usage.CacheReadInputTokens != 0 || cache == 0 {
-				cache = ev.Usage.CacheReadInputTokens
-			}
-			out = ev.Usage.OutputTokens
-			seen = true
+		if s.mode == scanUnknown {
+			return // only whitespace so far
 		}
 	}
-	if !seen {
-		return nil
+	switch s.mode {
+	case scanJSON:
+		if len(s.json)+len(p) > maxJSONBodySize {
+			s.mode = scanIgnored
+			s.json = nil
+			return
+		}
+		s.json = append(s.json, p...)
+	case scanSSE:
+		s.writeSSE(p)
 	}
-	return &Usage{Input: in, Cache: cache, Output: out}
 }
 
-// jsonBodyUsage digs the "usage" object out of a JSON document.
-func jsonBodyUsage(doc []byte) json.RawMessage {
+func (s *usageScanner) writeSSE(p []byte) {
+	for {
+		i := bytes.IndexByte(p, '\n')
+		if i < 0 {
+			s.appendLine(p)
+			return
+		}
+		s.appendLine(p[:i])
+		if !s.overflow {
+			line := bytes.TrimSuffix(s.line, []byte("\r"))
+			if payload, ok := bytes.CutPrefix(line, []byte("data: ")); ok {
+				s.state.consumeEvent(payload)
+			}
+		}
+		s.line = s.line[:0]
+		s.overflow = false
+		p = p[i+1:]
+	}
+}
+
+func (s *usageScanner) appendLine(b []byte) {
+	if s.overflow {
+		return
+	}
+	if len(s.line)+len(b) > maxSSEEventSize {
+		s.overflow = true
+		s.line = nil
+		return
+	}
+	s.line = append(s.line, b...)
+}
+
+// Result returns the usage seen so far, or nil.
+func (s *usageScanner) Result() *Usage {
+	switch s.mode {
+	case scanJSON:
+		trimmed := bytes.TrimSpace(s.json)
+		if len(trimmed) == 0 || trimmed[0] != '{' {
+			return nil
+		}
+		return bodyUsage(trimmed)
+	case scanSSE:
+		return s.state.result()
+	}
+	return nil
+}
+
+// extractUsage extracts usage from a complete body. The tracer uses a
+// usageScanner directly so it can parse as bytes arrive.
+func extractUsage(body []byte) *Usage {
+	var s usageScanner
+	s.Write(body)
+	return s.Result()
+}
+
+// usageState accumulates the usage fields reported across SSE events.
+type usageState struct {
+	in, cache, out int
+	seen           bool
+}
+
+func (s *usageState) result() *Usage {
+	if !s.seen {
+		return nil
+	}
+	return &Usage{Input: s.in, Cache: s.cache, Output: s.out}
+}
+
+// consumeEvent folds one SSE data payload into the running usage. Formats:
+// Claude message_start (input/cache) + message_delta (final output), an
+// OpenAI Responses event with a response.usage object, or an OpenAI
+// chat-completions chunk with a usage field.
+func (s *usageState) consumeEvent(payload []byte) {
+	if bytes.Equal(payload, []byte("[DONE]")) || !json.Valid(payload) {
+		return
+	}
+	if u := openAIUsage(jsonBodyUsage(payload)); u != nil {
+		s.set(u)
+		return
+	}
+	var ev struct {
+		Type     string `json:"type"`
+		Response *struct {
+			Usage json.RawMessage `json:"usage"`
+		} `json:"response"`
+		Message struct {
+			Usage struct {
+				InputTokens          int `json:"input_tokens"`
+				CacheReadInputTokens int `json:"cache_read_input_tokens"`
+			} `json:"usage"`
+		} `json:"message"`
+		Usage struct {
+			InputTokens          int `json:"input_tokens"`
+			OutputTokens         int `json:"output_tokens"`
+			CacheReadInputTokens int `json:"cache_read_input_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(payload, &ev); err != nil {
+		return
+	}
+	// OpenAI Responses events (response.created/in_progress/completed/…)
+	// nest usage under "response".
+	if ev.Response != nil {
+		if u := responsesUsage(ev.Response.Usage); u != nil {
+			s.set(u)
+			return
+		}
+	}
+	switch ev.Type {
+	case "message_start":
+		s.in = ev.Message.Usage.InputTokens
+		s.cache = ev.Message.Usage.CacheReadInputTokens
+		s.seen = true
+	case "message_delta":
+		// Upstreams report the full triple here too; take it when the
+		// window lost message_start — nonzero fields win.
+		if ev.Usage.InputTokens != 0 || s.in == 0 {
+			s.in = ev.Usage.InputTokens
+		}
+		if ev.Usage.CacheReadInputTokens != 0 || s.cache == 0 {
+			s.cache = ev.Usage.CacheReadInputTokens
+		}
+		s.out = ev.Usage.OutputTokens
+		s.seen = true
+	}
+}
+
+func (s *usageState) set(u *Usage) {
+	s.in, s.cache, s.out = u.Input, u.Cache, u.Output
+	s.seen = true
+}
+
+// bodyUsage extracts usage from a complete JSON response body.
+func bodyUsage(doc []byte) *Usage {
 	var probe struct {
 		Object string          `json:"object"`
-		Type   string          `json:"type"`
 		Usage  json.RawMessage `json:"usage"`
 	}
 	if err := json.Unmarshal(doc, &probe); err != nil || len(probe.Usage) == 0 {
 		return nil
 	}
-	return probe.Usage
+	if probe.Object == "response" {
+		return responsesUsage(probe.Usage)
+	}
+	if u := openAIUsage(probe.Usage); u != nil {
+		return u
+	}
+	return claudeUsage(probe.Usage)
 }
 
-// responsesBodyUsage digs usage out of an OpenAI Responses response object.
-// The object discriminator distinguishes it from a Claude message, which also
-// reports input_tokens/output_tokens.
-func responsesBodyUsage(doc []byte) *Usage {
+// jsonBodyUsage digs the "usage" object out of a JSON document.
+func jsonBodyUsage(doc []byte) json.RawMessage {
 	var probe struct {
-		Object string          `json:"object"`
-		Usage  json.RawMessage `json:"usage"`
+		Usage json.RawMessage `json:"usage"`
 	}
-	if err := json.Unmarshal(doc, &probe); err != nil || probe.Object != "response" {
+	if err := json.Unmarshal(doc, &probe); err != nil {
 		return nil
 	}
-	return responsesUsage(probe.Usage)
+	return probe.Usage
 }
 
 // openAIUsage parses an OpenAI chat-completion usage object (prompt_tokens

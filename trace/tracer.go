@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -134,6 +133,7 @@ func (t *Tracer) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 		}
 	}
 	var body []byte
+	var root *caddyllm.LazyJsonNode
 	if r.Body != nil {
 		if jb, ok := r.Body.(*caddyllm.JsonReqBody); ok {
 			// Marshal is a pure snapshot: it caches the wire bytes from the
@@ -143,14 +143,21 @@ func (t *Tracer) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 				return err
 			}
 			body = raw
+			root = &jb.LazyJsonNode
 		} else {
 			raw, err := io.ReadAll(r.Body)
 			if err != nil {
 				return err
 			}
 			body = raw
-			// Restore for downstream consumption.
-			caddyllm.SetRawRequestBody(r, body)
+			// Hand downstream handlers the lazily-parsed form so they don't
+			// read and parse the body again. Non-object bodies stay raw.
+			if jb, err := caddyllm.NewJsonBodyFromBytes(raw); err == nil {
+				caddyllm.SetRequestBody(r, jb)
+				root = &jb.LazyJsonNode
+			} else {
+				caddyllm.SetRawRequestBody(r, body)
+			}
 		}
 	}
 	if s != nil && len(body) > 0 {
@@ -164,13 +171,8 @@ func (t *Tracer) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 	// at the top level of the JSON body. Best-effort: a non-JSON body just
 	// leaves it empty.
 	var model string
-	if len(body) > 0 {
-		var m struct {
-			Model string `json:"model"`
-		}
-		if json.Unmarshal(body, &m) == nil {
-			model = m.Model
-		}
+	if root != nil {
+		model, _ = root.Get("model").String()
 	}
 
 	rw := &teeResponseWriter{ResponseWriter: w, tracer: t, traceID: traceID, name: t.TraceName, storage: s}
@@ -183,7 +185,7 @@ func (t *Tracer) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 		// rw.status stays 0 when nothing was ever written (aborted before the
 		// response started); record it as 0 rather than inventing a 200.
 		if s != nil {
-			usage := extractUsage(rw.tail.buf).normalize(t.CacheInInput)
+			usage := rw.usage.Result().normalize(t.CacheInInput)
 			if rerr := s.RecordRequest(r.Context(), traceID, t.TraceName, start.UTC(),
 				int(time.Since(start).Milliseconds()), rw.status, reqBytes, rw.written, usage, model); rerr != nil {
 				t.logger.Error("record request", zap.Error(rerr), zap.String("id", traceID))
@@ -206,7 +208,7 @@ type teeResponseWriter struct {
 	name      string
 	storage   storage
 	headSaved bool
-	tail      tailBuffer // bounded tail of the body, for usage extraction
+	usage     usageScanner // incremental usage extraction from the body
 }
 
 func (w *teeResponseWriter) WriteHeader(status int) {
@@ -248,7 +250,7 @@ func (w *teeResponseWriter) Write(p []byte) (int, error) {
 	if w.status == 0 {
 		w.WriteHeader(http.StatusOK)
 	}
-	w.tail.Write(p)
+	w.usage.Write(p)
 	if w.storage != nil {
 		if err := w.storage.Save(nil, w.traceID, w.name, false, p); err != nil {
 			w.tracer.logger.Error("save response chunk", zap.Error(err), zap.String("id", w.traceID))

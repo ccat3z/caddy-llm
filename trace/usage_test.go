@@ -108,19 +108,54 @@ func TestExtractUsageNone(t *testing.T) {
 	}
 }
 
-func TestExtractUsageTailWindow(t *testing.T) {
-	// A stream larger than the tail window: usage must still be found after
-	// the window drops the head (first buffered line is truncated).
-	filler := strings.Repeat(`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"`+strings.Repeat("x", 1000)+`"}}`+"\n\n", 80)
-	tail := `event: message_delta` + "\n" +
-		`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":5,"output_tokens":42}}` + "\n"
-	var b tailBuffer
-	b.Write([]byte(filler + tail))
-	u := extractUsage(b.buf)
+func TestUsageScannerLargeTerminalEvent(t *testing.T) {
+	// A Responses terminal event embeds the whole response object and can
+	// exceed 64KB (observed: a 75KB response.completed event). Usage at its
+	// end must still be found, and the event may span Write calls.
+	padding := strings.Repeat("x", 100<<10)
+	body := strings.Join([]string{
+		`event: response.created`,
+		`data: {"type":"response.created","response":{"id":"resp_1","object":"response","status":"in_progress","instructions":"` + padding + `","output":[],"usage":null}}`,
+		``,
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","object":"response","status":"completed","instructions":"` + padding + `","output":[],"usage":{"input_tokens":16855,"input_tokens_details":{"cached_tokens":16831,"cache_write_tokens":21},"output_tokens":12}}}`,
+		``,
+	}, "\n")
+	var s usageScanner
+	for i := 0; i < len(body); i += 4096 {
+		end := i + 4096
+		if end > len(body) {
+			end = len(body)
+		}
+		s.Write([]byte(body[i:end]))
+	}
+	u := s.Result()
 	if u == nil {
 		t.Fatal("no usage")
 	}
-	if u.Input != 5 || u.Output != 42 {
+	if u.Input != 16855 || u.Cache != 16831 || u.Output != 12 {
+		t.Errorf("usage = %+v", u)
+	}
+}
+
+func TestUsageScannerLargeJSONBody(t *testing.T) {
+	// A buffered JSON body larger than the old 64KB tail must still parse.
+	body := `{"id":"m1","object":"response","status":"completed","instructions":"` +
+		strings.Repeat("x", 100<<10) +
+		`","usage":{"input_tokens":14979,"input_tokens_details":{"cached_tokens":14949},"output_tokens":6}}`
+	var s usageScanner
+	for i := 0; i < len(body); i += 4096 {
+		end := i + 4096
+		if end > len(body) {
+			end = len(body)
+		}
+		s.Write([]byte(body[i:end]))
+	}
+	u := s.Result()
+	if u == nil {
+		t.Fatal("no usage")
+	}
+	if u.Input != 14979 || u.Cache != 14949 || u.Output != 6 {
 		t.Errorf("usage = %+v", u)
 	}
 }
@@ -140,17 +175,5 @@ func TestNormalizeCacheInInput(t *testing.T) {
 	u3 := &Usage{Input: 10, Cache: 50, Output: 1}
 	if n3 := u3.normalize(true); n3.Input != 0 {
 		t.Errorf("negative clamp: %+v", n3)
-	}
-}
-
-func TestTailBufferBounds(t *testing.T) {
-	var b tailBuffer
-	b.Write([]byte(strings.Repeat("a", tailSize+100)))
-	if len(b.buf) != tailSize {
-		t.Fatalf("buf len = %d", len(b.buf))
-	}
-	b.Write([]byte("bb"))
-	if len(b.buf) != tailSize {
-		t.Fatalf("buf len = %d", len(b.buf))
 	}
 }
