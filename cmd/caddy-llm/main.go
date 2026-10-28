@@ -10,6 +10,7 @@ import (
 	// caddy-llm modules.
 	_ "github.com/ccat3z/caddy-llm/claudetoopenai"
 	_ "github.com/ccat3z/caddy-llm/imagefallback"
+	_ "github.com/ccat3z/caddy-llm/llmalias"
 	_ "github.com/ccat3z/caddy-llm/llmroute"
 	_ "github.com/ccat3z/caddy-llm/trace"
 )

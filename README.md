@@ -15,6 +15,7 @@ Configure via JSON (`caddy-llm run --config caddy.json`) or Caddyfile
 |---|---|
 | `http.handlers.claude2openai` | Translates Anthropic request/response bodies to OpenAI chat-completions and back. Path routing and upstream-path rewriting are left to route matchers and the `rewrite` handler; forwarding to `reverse_proxy`. |
 | `http.handlers.imagefallback` | Rewrites an Anthropic request's model to a vision-capable fallback (`imagefallback <pattern> <fallback>`, pattern is an anchored regex) when the request contains an image block — text-only models reject those requests outright, wherever in the history the image sits (tool_result content is recursed). The image itself and every other byte pass through untouched; image-free requests or non-matching models keep their original body. Chain it before `claude2openai`. |
+| `http.handlers.llm_alias` | Rewrites the request body's model name: `llm_alias <find> <replace>` — when the model matches `find` it is replaced by `replace` (capture groups supported, `$1`). Matching follows Caddy's built-in regexp conventions: RE2 syntax, unanchored — anchor with `^...$` to match the whole model name. Format-agnostic: only the top-level `model` member is touched, so it works on Claude- and OpenAI-shaped bodies alike. |
 | `http.handlers.llm_route` | Model-based upstream routing with fallthrough: each block matches the request's model (literal or anchored regex with rewrite), runs its own subchain on a cloned request, and falls through to the next block on 429/404/5xx or subchain errors. |
 | `http.handlers.trace` | Captures the request/response passing through it (both sides of a translation when chained) and records them to the trace store. Extracts token usage (input / cache / output, three independent counts) from the response; `cache_in_input: true` when the tracer's upstream counts cache inside input (OpenAI-style `prompt_tokens` or Responses `input_tokens` — cache is then subtracted so the store is always independent). |
 | `http.handlers.llm_tracer_api` | HTTP query API for recorded traces and token-usage time series. |
@@ -49,6 +50,7 @@ caddy-llm run --config examples/traced-translation.Caddyfile
 ```
 
 Caddyfile directives: `claude2openai`, `imagefallback <pattern> <fallback>`,
+`llm_alias <find> <replace>`,
 `trace <name>`, `llm_tracer_api`,
 the `llm_tracer` global option (no args, or a block with `max_size`), and
 `llm_route` (with `model`
@@ -263,6 +265,7 @@ claudetoopenai/           claude2openai handler + the Anthropic↔OpenAI
                           translation (request on nodes + response/stream)
 imagefallback/            imagefallback handler (image-bearing request →
                           vision-capable fallback model)
+llmalias/                 llm_alias handler (regex model-name rewriting)
 llmroute/                 llm_route handler (model routing + fallthrough)
 trace/                    trace handler + llm_tracer app + query API
 integration/              full-chain integration tests (JSON configs)
