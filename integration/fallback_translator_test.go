@@ -37,10 +37,10 @@ func TestFallbackWithTranslator(t *testing.T) {
 	tester := caddytest.NewTester(t).WithDefaultOverrides(caddytest.Config{AdminPort: testPorts[1]})
 	tester.InitServer(jsonConfig(messagesRoute(
 		llmRoute([]map[string]any{
-			modelRule("glm-5.2", ""),
+			modelRule(`^glm-5\.2$`, ""),
 		}, claude2openaiHandler(), proxyHandler(dial(primary.URL), "")),
 		llmRoute([]map[string]any{
-			modelRule("glm-5.2", ""),
+			modelRule(`^glm-5\.2$`, ""),
 		}, claude2openaiHandler(), proxyHandler(dial(fallback.URL), "")),
 		respondHandler(404, "no upstream"),
 	)), "json")

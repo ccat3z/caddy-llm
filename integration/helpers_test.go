@@ -87,13 +87,13 @@ func llmRoute(rules []map[string]any, subHandlers ...map[string]any) map[string]
 	}
 }
 
-// modelRule is one entry of llm_route's models list: a literal
-// (replace empty) or an anchored regexp with a $1-style replacement.
-func modelRule(pattern, replace string) map[string]any {
+// modelRule is one entry of llm_route's models list: a find regexp
+// (replace empty = model passes through) with a $1-style replacement.
+func modelRule(find, replace string) map[string]any {
 	if replace == "" {
-		return map[string]any{"pattern": pattern}
+		return map[string]any{"find": find}
 	}
-	return map[string]any{"pattern": pattern, "replace": replace}
+	return map[string]any{"find": find, "replace": replace}
 }
 
 // proxyHandler reverse-proxies to dial (host:port) with an optional

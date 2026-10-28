@@ -13,20 +13,17 @@ import (
 
 func TestMatch(t *testing.T) {
 	r := &Route{Models: []ModelRule{
-		{Pattern: `mc/(.*)`, Replace: "$1"},
-		{Pattern: "kimi-k3"},
-		{Pattern: `glm/(.*)`, Replace: "$1"},
+		{Find: `^mc/(.+)$`, Replace: "$1"},
+		{Find: `^kimi-k3$`},
+		{Find: `^glm/(.+)$`, Replace: "$1"},
 	}}
-	// regex rules need compiled patterns (anchored, as Provision does)
+	// rules need compiled patterns, as Provision does
 	for i := range r.Models {
-		m := &r.Models[i]
-		if m.Replace != "" {
-			re, err := regexp.Compile("^(?:" + m.Pattern + ")$")
-			if err != nil {
-				t.Fatal(err)
-			}
-			m.re = re
+		re, err := regexp.Compile(r.Models[i].Find)
+		if err != nil {
+			t.Fatal(err)
 		}
+		r.Models[i].re = re
 	}
 	cases := []struct {
 		model     string
@@ -50,7 +47,7 @@ func TestMatch(t *testing.T) {
 			t.Errorf("match(%q) rewritten=%q, want %q", c.model, rewritten, c.rewritten)
 		}
 	}
-	// anchoring: 'mc/(.*)' must not match 'xmc/glm'
+	// anchoring: the ^-anchored rule must not match 'xmc/glm'
 	if rule, _ := r.match("xmc/glm-5.2"); rule != nil {
 		t.Error("pattern should be anchored")
 	}
@@ -112,7 +109,12 @@ func TestPeekWriter(t *testing.T) {
 // cover the non-matching passthrough body-integrity path with a nil-safe
 // guard: Route with no sub never runs the chain because match() misses.
 func TestServeHTTPNoMatchPassesThrough(t *testing.T) {
-	r := &Route{Models: []ModelRule{{Pattern: "kimi-k3"}}}
+	r := &Route{Models: []ModelRule{{Find: "^kimi-k3$"}}}
+	re, err := regexp.Compile(r.Models[0].Find)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Models[0].re = re
 	var nextCalled bool
 	next := caddyhttp.HandlerFunc(func(w http.ResponseWriter, req *http.Request) error {
 		nextCalled = true

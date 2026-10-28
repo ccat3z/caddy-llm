@@ -75,8 +75,8 @@ func TestCaddyfileAdapt(t *testing.T) {
 http://127.0.0.1:%d {
 	route /v1/messages {
 		llm_route {
-			model glm/(.*) $1
-			model glm-5.2
+			model ^glm/(.*)$ $1
+			model ^glm-5\.2$
 
 			route {
 				rewrite * /api/coding/paas/v4/chat/completions
@@ -133,10 +133,10 @@ http://127.0.0.1:%d {
 	if len(models) != 2 {
 		t.Fatalf("llm_route models = %v", models)
 	}
-	if m := models[0].(map[string]any); m["pattern"] != "glm/(.*)" || m["replace"] != "$1" {
+	if m := models[0].(map[string]any); m["find"] != "^glm/(.*)$" || m["replace"] != "$1" {
 		t.Errorf("model[0] = %v", m)
 	}
-	if m := models[1].(map[string]any); m["pattern"] != "glm-5.2" {
+	if m := models[1].(map[string]any); m["find"] != `^glm-5\.2$` {
 		t.Errorf("model[1] = %v", m)
 	}
 

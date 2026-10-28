@@ -70,12 +70,12 @@ func (u *upstreamLog) setStatus(s int) {
 func routeJSON(mcURL, glmURL string) string {
 	return jsonConfig(messagesRoute(
 		llmRoute([]map[string]any{
-			modelRule(`mc/(.*)`, "$1"),
-			modelRule("glm-5.2", ""),
+			modelRule(`^mc/(.*)$`, "$1"),
+			modelRule(`^glm-5\.2$`, ""),
 		}, rewriteHandler("/mc/chat"), proxyHandler(dial(mcURL), "Bearer mc-key")),
 		llmRoute([]map[string]any{
-			modelRule(`glm/(.*)`, "$1"),
-			modelRule("glm-5.2", ""),
+			modelRule(`^glm/(.*)$`, "$1"),
+			modelRule(`^glm-5\.2$`, ""),
 		}, rewriteHandler("/glm/chat"), proxyHandler(dial(glmURL), "Bearer glm-key")),
 		respondHandler(404, "no upstream"),
 	))
@@ -220,7 +220,7 @@ func TestLLMRouteExhaustedFallthroughReplaysError(t *testing.T) {
 	tester := caddytest.NewTester(t).WithDefaultOverrides(caddytest.Config{AdminPort: testPorts[1]})
 	tester.InitServer(jsonConfig(messagesRoute(
 		llmRoute([]map[string]any{
-			modelRule(`mc/(.*)`, "$1"),
+			modelRule(`^mc/(.*)$`, "$1"),
 		}, rewriteHandler("/mc/chat"), proxyHandler(dial(mcSrv.URL), "Bearer mc-key")),
 		// Returns an error instead of writing a response, like the site-level
 		// `error 404` in the shipped Caddyfile.
@@ -256,10 +256,10 @@ func TestLLMRouteWithTranslation(t *testing.T) {
 	tester := caddytest.NewTester(t).WithDefaultOverrides(caddytest.Config{AdminPort: testPorts[1]})
 	tester.InitServer(jsonConfig(messagesRoute(
 		llmRoute([]map[string]any{
-			modelRule(`native/(.*)`, "$1"),
+			modelRule(`^native/(.*)$`, "$1"),
 		}, rewriteHandler("/v2/chat"), proxyHandler(dial(claudeSrv.URL), "")),
 		llmRoute([]map[string]any{
-			modelRule(`openai/(.*)`, "$1"),
+			modelRule(`^openai/(.*)$`, "$1"),
 		}, rewriteHandler("/v1/chat/completions"), claude2openaiHandler(), proxyHandler(dial(openaiUp.URL), "")),
 		respondHandler(404, "no upstream"),
 	)), "json")
@@ -305,7 +305,7 @@ func TestLLMRouteSSEStreaming(t *testing.T) {
 	tester := caddytest.NewTester(t).WithDefaultOverrides(caddytest.Config{AdminPort: testPorts[1]})
 	tester.InitServer(jsonConfig(messagesRoute(
 		llmRoute([]map[string]any{
-			modelRule("sse-model", ""),
+			modelRule(`^sse-model$`, ""),
 		}, rewriteHandler("/stream"), proxyHandler(dial(upstream.URL), "")),
 		respondHandler(404, "no upstream"),
 	)), "json")
@@ -342,7 +342,7 @@ func TestLLMRouteSSEErrorReplaysError(t *testing.T) {
 	tester := caddytest.NewTester(t).WithDefaultOverrides(caddytest.Config{AdminPort: testPorts[1]})
 	tester.InitServer(jsonConfig(messagesRoute(
 		llmRoute([]map[string]any{
-			modelRule("sse-model", ""),
+			modelRule(`^sse-model$`, ""),
 		}, rewriteHandler("/v1/chat/completions"), claude2openaiHandler(), proxyHandler(dial(up.URL), "")),
 		map[string]any{"handler": "error", "status_code": 404},
 	)), "json")
@@ -395,7 +395,7 @@ func TestBodyPipeline(t *testing.T) {
 	tester := caddytest.NewTester(t).WithDefaultOverrides(caddytest.Config{AdminPort: testPorts[1]})
 	tester.InitServer(jsonConfig(messagesRoute(
 		llmRoute([]map[string]any{
-			modelRule(`glm/(.*)`, "$1"), modelRule("glm-5.2", ""),
+			modelRule(`^glm/(.*)$`, "$1"), modelRule(`^glm-5\.2$`, ""),
 		}, rewriteHandler("/v1/chat/completions"), claude2openaiHandler(), proxyHandler(dial(openaiUp.URL), "")),
 		respondHandler(404, "no upstream"),
 	)), "json")
@@ -452,7 +452,7 @@ func TestOriginalBodyAlwaysReadable(t *testing.T) {
 	tester := caddytest.NewTester(t).WithDefaultOverrides(caddytest.Config{AdminPort: testPorts[1]})
 	tester.InitServer(jsonConfig(messagesRoute(
 		llmRoute([]map[string]any{
-			modelRule("glm-5.2", ""),
+			modelRule(`^glm-5\.2$`, ""),
 		}, proxyHandler(dial(up.URL), "")),
 		respondHandler(404, "no upstream"),
 	)), "json")
@@ -496,7 +496,7 @@ func TestBodyTypeAssertionVisibleDownstream(t *testing.T) {
 	tester := caddytest.NewTester(t).WithDefaultOverrides(caddytest.Config{AdminPort: testPorts[1]})
 	tester.InitServer(jsonConfig(messagesRoute(
 		llmRoute([]map[string]any{
-			modelRule("glm-5.2", ""),
+			modelRule(`^glm-5\.2$`, ""),
 		}, proxyHandler(dial(up.URL), "")),
 		respondHandler(404, "no upstream"),
 	)), "json")
@@ -524,7 +524,7 @@ func TestLegacyClaude2openaiHandlerForm(t *testing.T) {
 	tester := caddytest.NewTester(t).WithDefaultOverrides(caddytest.Config{AdminPort: testPorts[1]})
 	tester.InitServer(jsonConfig(messagesRoute(
 		llmRoute([]map[string]any{
-			modelRule("glm-5.2", ""),
+			modelRule(`^glm-5\.2$`, ""),
 		}, rewriteHandler("/v1/chat/completions"), claude2openaiHandler(), proxyHandler(dial(openaiUp.URL), "")),
 		respondHandler(404, "no upstream"),
 	)), "json")

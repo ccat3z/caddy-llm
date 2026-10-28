@@ -1,7 +1,8 @@
 // Package imagefallback provides the imagefallback handler: when a Claude
 // Messages request carries an image block and the requested model matches a
-// pattern, the model name is rewritten to a vision-capable fallback. The
-// image itself passes through untouched — the fallback model reads it.
+// find regexp, the model name is rewritten to a replace template (a
+// vision-capable fallback). The image itself passes through untouched — the
+// fallback model reads it.
 package imagefallback
 
 import (
@@ -34,12 +35,17 @@ func init() {
 // requests without images, or whose model does not match, pass through with
 // their original body untouched.
 type ImageFallback struct {
-	// Pattern matches the requested model name (anchored regexp).
-	Pattern string `json:"pattern,omitempty"`
-	// Fallback is the model name the request is rewritten to.
-	Fallback string `json:"fallback,omitempty"`
+	// The regular expression to find in the model name, in RE2 syntax.
+	// Unanchored, like Caddy's built-in regexp modules: anchor with ^...$ to
+	// match the whole model name. For details, see
+	// [Go's regexp package](https://golang.org/pkg/regexp/).
+	Find string `json:"find,omitempty"`
 
-	re *regexp.Regexp `json:"-"`
+	// The string to replace the match with — the fallback model. Supports
+	// regular expression capture groups (e.g. $1).
+	Replace string `json:"replace,omitempty"`
+
+	re *regexp.Regexp
 }
 
 // CaddyModule returns the Caddy module information.
@@ -52,12 +58,12 @@ func (ImageFallback) CaddyModule() caddy.ModuleInfo {
 
 // Provision validates the configuration.
 func (f *ImageFallback) Provision(_ caddy.Context) error {
-	if f.Fallback == "" {
-		return fmt.Errorf("imagefallback requires a fallback model name")
+	if f.Replace == "" {
+		return fmt.Errorf("imagefallback requires a replace (fallback) model name")
 	}
-	re, err := regexp.Compile("^(?:" + f.Pattern + ")$")
+	re, err := regexp.Compile(f.Find)
 	if err != nil {
-		return fmt.Errorf("imagefallback pattern %q: %v", f.Pattern, err)
+		return fmt.Errorf("compiling imagefallback regexp %s: %v", f.Find, err)
 	}
 	f.re = re
 	return nil
@@ -84,7 +90,7 @@ func (f *ImageFallback) ServeHTTP(w http.ResponseWriter, r *http.Request, next c
 	if !f.re.MatchString(model) {
 		return next.ServeHTTP(w, r)
 	}
-	variant := body.With("model", f.Fallback)
+	variant := body.With("model", f.re.ReplaceAllString(model, f.Replace))
 	caddyllm.SetRequestBody(r, &caddyllm.JsonReqBody{LazyJsonNode: *variant})
 	return next.ServeHTTP(w, r)
 }
@@ -126,18 +132,18 @@ func contentHasImage(n *caddyllm.LazyJsonNode) bool {
 
 // ---------- Caddyfile ----------
 
-// imagefallback <regex match model name> <fallback model name>
+// imagefallback <find> <replace>
 func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error) {
 	var f ImageFallback
 	for h.Next() {
 		if !h.NextArg() {
 			return nil, h.ArgErr()
 		}
-		f.Pattern = h.Val()
+		f.Find = h.Val()
 		if !h.NextArg() {
 			return nil, h.ArgErr()
 		}
-		f.Fallback = h.Val()
+		f.Replace = h.Val()
 		if h.NextArg() {
 			return nil, h.ArgErr()
 		}

@@ -47,10 +47,11 @@ func isFallthroughStatus(code int) bool {
 
 // Route is the llm_route handler.
 type Route struct {
-	// Models are the match rules, in order: a regexp with an optional
-	// replacement template ($1 for capture groups), or a bare literal for
-	// exact matching. First matching rule wins; its replacement (if any)
-	// rewrites the model name sent to this upstream.
+	// Models are the match rules, in order: an unanchored regexp to find
+	// (anchor with ^...$ to match the whole model name) with an optional
+	// replacement template ($1 for capture groups; empty passes the model
+	// through unchanged). First matching rule wins; its replacement (if
+	// any) rewrites the model name sent to this upstream.
 	Models []ModelRule `json:"models,omitempty"`
 
 	// SubRaw is the subchain executed (on a cloned request) when a rule
@@ -63,12 +64,16 @@ type Route struct {
 }
 
 // ModelRule matches the client model name and optionally rewrites it.
+// Matching follows Caddy's built-in regexp conventions, like llm_alias:
+// Find is an unanchored RE2 pattern — anchor with ^...$ to match the whole
+// model name — and Replace is a replacement template with capture-group
+// support.
 type ModelRule struct {
-	// Pattern is either a regexp (when Replace is set) or a literal
-	// (exact match when Replace is empty).
-	Pattern string `json:"pattern,omitempty"`
-	// Replace is a regexp replacement template ($1 etc.). Empty means the
-	// model name passes through unchanged.
+	// The regular expression to find in the model name, in RE2 syntax,
+	// evaluated unanchored. Use ^...$ to match the whole model name.
+	Find string `json:"find,omitempty"`
+	// The string to replace the match with ($1 etc.). Empty means the model
+	// name passes through unchanged.
 	Replace string `json:"replace,omitempty"`
 
 	re *regexp.Regexp `json:"-"`
@@ -87,13 +92,11 @@ func (r *Route) Provision(ctx caddy.Context) error {
 	r.logger = ctx.Logger()
 	for i := range r.Models {
 		m := &r.Models[i]
-		if m.Replace != "" {
-			re, err := regexp.Compile("^(?:" + m.Pattern + ")$")
-			if err != nil {
-				return fmt.Errorf("model pattern %q: %v", m.Pattern, err)
-			}
-			m.re = re
+		re, err := regexp.Compile(m.Find)
+		if err != nil {
+			return fmt.Errorf("compiling model regexp %s: %v", m.Find, err)
 		}
+		m.re = re
 	}
 	if r.SubRaw == nil {
 		// Without a subchain every matching request would panic on the nil
@@ -240,14 +243,11 @@ func (r *Route) ServeHTTP(w http.ResponseWriter, req *http.Request, next caddyht
 func (r *Route) match(model string) (*ModelRule, string) {
 	for i := range r.Models {
 		m := &r.Models[i]
-		if m.re != nil {
-			if m.re.MatchString(model) {
-				return m, m.re.ReplaceAllString(model, m.Replace)
+		if m.re.MatchString(model) {
+			if m.Replace == "" {
+				return m, model
 			}
-			continue
-		}
-		if m.Pattern == model {
-			return m, model
+			return m, m.re.ReplaceAllString(model, m.Replace)
 		}
 	}
 	return nil, ""
@@ -518,11 +518,11 @@ func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error)
 				args := d.RemainingArgs()
 				switch len(args) {
 				case 1:
-					r.Models = append(r.Models, ModelRule{Pattern: args[0]})
+					r.Models = append(r.Models, ModelRule{Find: args[0]})
 				case 2:
-					r.Models = append(r.Models, ModelRule{Pattern: args[0], Replace: args[1]})
+					r.Models = append(r.Models, ModelRule{Find: args[0], Replace: args[1]})
 				default:
-					return nil, h.Errf("model takes 1 arg (exact name) or 2 (pattern replacement)")
+					return nil, h.Errf("model takes 1 arg (find) or 2 (find replace)")
 				}
 			default:
 				subSegments = append(subSegments, seg)

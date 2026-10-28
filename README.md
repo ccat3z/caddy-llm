@@ -14,9 +14,9 @@ Configure via JSON (`caddy-llm run --config caddy.json`) or Caddyfile
 | Module ID | What it does |
 |---|---|
 | `http.handlers.claude2openai` | Translates Anthropic request/response bodies to OpenAI chat-completions and back. Path routing and upstream-path rewriting are left to route matchers and the `rewrite` handler; forwarding to `reverse_proxy`. |
-| `http.handlers.imagefallback` | Rewrites an Anthropic request's model to a vision-capable fallback (`imagefallback <pattern> <fallback>`, pattern is an anchored regex) when the request contains an image block — text-only models reject those requests outright, wherever in the history the image sits (tool_result content is recursed). The image itself and every other byte pass through untouched; image-free requests or non-matching models keep their original body. Chain it before `claude2openai`. |
+| `http.handlers.imagefallback` | Rewrites an Anthropic request's model to a vision-capable fallback (`imagefallback <find> <replace>`, find is an unanchored regex — anchor with ^...$; replace supports $1) when the request contains an image block — text-only models reject those requests outright, wherever in the history the image sits (tool_result content is recursed). The image itself and every other byte pass through untouched; image-free requests or non-matching models keep their original body. Chain it before `claude2openai`. |
 | `http.handlers.llm_alias` | Rewrites the request body's model name: `llm_alias <find> <replace>` — when the model matches `find` it is replaced by `replace` (capture groups supported, `$1`). Matching follows Caddy's built-in regexp conventions: RE2 syntax, unanchored — anchor with `^...$` to match the whole model name. Format-agnostic: only the top-level `model` member is touched, so it works on Claude- and OpenAI-shaped bodies alike. |
-| `http.handlers.llm_route` | Model-based upstream routing with fallthrough: each block matches the request's model (literal or anchored regex with rewrite), runs its own subchain on a cloned request, and falls through to the next block on 429/404/5xx or subchain errors. |
+| `http.handlers.llm_route` | Model-based upstream routing with fallthrough: each block matches the request's model (unanchored regex find rule with optional $1-style replace, like llm_alias; anchor with ^...$ for a whole-name match), runs its own subchain on a cloned request, and falls through to the next block on 429/404/5xx or subchain errors. |
 | `http.handlers.trace` | Captures the request/response passing through it (both sides of a translation when chained) and records them to the trace store. Extracts token usage (input / cache / output, three independent counts) from the response; `cache_in_input: true` when the tracer's upstream counts cache inside input (OpenAI-style `prompt_tokens` or Responses `input_tokens` — cache is then subtracted so the store is always independent). |
 | `http.handlers.llm_tracer_api` | HTTP query API for recorded traces and token-usage time series. |
 | [`web/`](web/) | React dashboard over the traces API: stacked token-usage time series and the request event table with raw HTTP exchanges. Embedded into the binary (`go:embed`) and served by `llm_tracer_api` at `{mount}/ui/`. |
@@ -49,7 +49,7 @@ caddy-llm run --config examples/traced-translation.json
 caddy-llm run --config examples/traced-translation.Caddyfile
 ```
 
-Caddyfile directives: `claude2openai`, `imagefallback <pattern> <fallback>`,
+Caddyfile directives: `claude2openai`, `imagefallback <find> <replace>`,
 `llm_alias <find> <replace>`,
 `trace <name>`, `llm_tracer_api`,
 the `llm_tracer` global option (no args, or a block with `max_size`), and
@@ -74,8 +74,8 @@ order. The shape of one block (from
 {
   "handler": "llm_route",
   "models": [
-    { "pattern": "glm/(.*)", "replace": "$1" },
-    { "pattern": "glm-5.2" }
+    { "find": "^glm/(.*)$", "replace": "$1" },
+    { "find": "^glm-5\.2$" }
   ],
   "sub": {
     "handler": "subroute",
@@ -95,9 +95,10 @@ order. The shape of one block (from
 
 Behavior:
 
-- A matching rule rewrites the model name (regex with `$1` template) on a
-  deep copy of the parsed object. The request is cloned, so nothing leaks
-  between blocks — a fallthrough hands the next block the pristine original.
+- A matching rule with a `replace` rewrites the model name (`$1` capture
+  groups) on a deep copy of the parsed object. The request is cloned, so
+  nothing leaks between blocks — a fallthrough hands the next block the
+  pristine original.
 - Fallthrough happens when no rule matches, or the subchain answers 429/404/
   5xx, or the subchain errors (dial failure). The failed attempt's response
   headers are discarded (the shared header map is restored), so the fallback

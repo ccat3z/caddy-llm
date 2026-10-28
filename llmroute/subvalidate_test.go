@@ -12,7 +12,7 @@ import (
 func TestProvisionRequiresSub(t *testing.T) {
 	// Provision validates before using ctx, so a zero Context suffices to
 	// reach the SubRaw check.
-	r := &Route{Models: []ModelRule{{Pattern: "m"}}}
+	r := &Route{Models: []ModelRule{{Find: "^m$"}}}
 	err := r.Provision(caddy.Context{})
 	if err == nil {
 		t.Fatal("Provision must reject models without a sub")

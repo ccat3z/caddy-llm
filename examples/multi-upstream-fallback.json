@@ -31,11 +31,11 @@
 									"handler": "llm_route",
 									"models": [
 										{
-											"pattern": "native/(.*)",
-											"replace": "$1"
+											"replace": "$1",
+											"find": "^native/(.*)$"
 										},
 										{
-											"pattern": "glm-5.2"
+											"find": "^glm-5\\.2$"
 										}
 									],
 									"sub": {
@@ -77,11 +77,11 @@
 									"handler": "llm_route",
 									"models": [
 										{
-											"pattern": "glm/(.*)",
-											"replace": "$1"
+											"replace": "$1",
+											"find": "^glm/(.*)$"
 										},
 										{
-											"pattern": "glm-5.2"
+											"find": "^glm-5\\.2$"
 										}
 									],
 									"sub": {

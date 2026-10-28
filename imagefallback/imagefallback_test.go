@@ -18,7 +18,7 @@ import (
 // the (possibly rewritten) request.
 func runFallback(t *testing.T, pattern, fallback, method, body string, next caddyhttp.HandlerFunc) {
 	t.Helper()
-	f := &ImageFallback{Pattern: pattern, Fallback: fallback}
+	f := &ImageFallback{Find: pattern, Replace: fallback}
 	if err := f.Provision(caddy.Context{}); err != nil {
 		t.Fatalf("provision: %v", err)
 	}
@@ -54,10 +54,11 @@ const imageBody = `{"model":"glm-5.3","max_tokens":10,"messages":[
 ]}`
 
 // An image plus a matching model rewrites the model and keeps everything
-// else — the image included — byte for byte.
+// else — the image included — byte for byte. The replacement supports
+// capture groups, like llm_alias.
 func TestImageFallbackRewritesModel(t *testing.T) {
 	next, got := seenBody(t)
-	runFallback(t, `glm-5\.3`, "glm-5.3-flash", http.MethodPost, imageBody, next)
+	runFallback(t, `^glm-5\.(\d)$`, "glm-5.$1-flash", http.MethodPost, imageBody, next)
 	m := *got
 	if m["model"] != "glm-5.3-flash" {
 		t.Errorf("model = %v, want glm-5.3-flash", m["model"])
@@ -141,7 +142,7 @@ func TestImageFallbackPassthrough(t *testing.T) {
 }
 
 func TestImageFallbackCaddyfile(t *testing.T) {
-	h := httpcaddyfile.Helper{Dispenser: caddyfile.NewTestDispenser("imagefallback glm-5\\.3 glm-5.3-flash")}
+	h := httpcaddyfile.Helper{Dispenser: caddyfile.NewTestDispenser("imagefallback ^glm-5\\.3$ glm-5.3-flash")}
 	mh, err := parseCaddyfile(h)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
@@ -150,15 +151,15 @@ func TestImageFallbackCaddyfile(t *testing.T) {
 	if !ok {
 		t.Fatalf("wrong module type %T", mh)
 	}
-	if f.Pattern != `glm-5\.3` || f.Fallback != "glm-5.3-flash" {
+	if f.Find != `^glm-5\.3$` || f.Replace != "glm-5.3-flash" {
 		t.Errorf("parsed config = %+v", f)
 	}
 	if err := f.Provision(caddy.Context{}); err != nil {
 		t.Fatalf("provision: %v", err)
 	}
+	// Unanchored semantics would also match glm-5.3-flash; the example-style
+	// ^...$ pattern matches exactly one name.
 	if !f.re.MatchString("glm-5.3") || f.re.MatchString("glm-5.3-flash") {
-		// The rewrite is idempotent by pattern: the fallback model should
-		// not match again (here it also doesn't — the pattern is exact).
 		t.Errorf("pattern matching wrong: glm-5.3=%v glm-5.3-flash=%v",
 			f.re.MatchString("glm-5.3"), f.re.MatchString("glm-5.3-flash"))
 	}
