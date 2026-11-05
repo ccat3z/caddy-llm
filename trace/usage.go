@@ -35,11 +35,10 @@ const maxJSONBodySize = 8 << 20
 // never has to hold the whole stream; a buffered JSON body is parsed once it
 // is complete.
 type usageScanner struct {
-	mode     scanMode
-	json     []byte // buffered JSON body
-	line     []byte // current (possibly partial) SSE line
-	overflow bool   // current line exceeded maxSSEEventSize
-	state    usageState
+	mode   scanMode
+	json   []byte // buffered JSON body
+	events SSEEventScanner
+	state  usageState
 }
 
 type scanMode uint8
@@ -77,22 +76,38 @@ func (s *usageScanner) Write(p []byte) {
 		}
 		s.json = append(s.json, p...)
 	case scanSSE:
-		s.writeSSE(p)
+		if s.events.OnEvent == nil {
+			s.events.OnEvent = s.state.consumeEvent
+		}
+		s.events.Write(p)
 	}
 }
 
-func (s *usageScanner) writeSSE(p []byte) {
-	for {
+// SSEEventScanner splits an SSE byte stream into complete data-field
+// payloads and hands each to OnEvent. Per the SSE spec the "data:" prefix
+// may be followed by one optional space; both forms are accepted. One
+// event is capped at maxSSEEventSize.
+type SSEEventScanner struct {
+	// OnEvent receives each complete data-field payload (leading space
+	// stripped). Must be set before the first Write.
+	OnEvent func(payload []byte)
+
+	line     []byte
+	overflow bool
+}
+
+func (s *SSEEventScanner) Write(p []byte) {
+	for len(p) > 0 {
 		i := bytes.IndexByte(p, '\n')
 		if i < 0 {
-			s.appendLine(p)
+			s.append(p)
 			return
 		}
-		s.appendLine(p[:i])
+		s.append(p[:i])
 		if !s.overflow {
 			line := bytes.TrimSuffix(s.line, []byte("\r"))
-			if payload, ok := bytes.CutPrefix(line, []byte("data: ")); ok {
-				s.state.consumeEvent(payload)
+			if payload, ok := bytes.CutPrefix(line, []byte("data:")); ok {
+				s.OnEvent(bytes.TrimLeft(payload, " "))
 			}
 		}
 		s.line = s.line[:0]
@@ -101,7 +116,7 @@ func (s *usageScanner) writeSSE(p []byte) {
 	}
 }
 
-func (s *usageScanner) appendLine(b []byte) {
+func (s *SSEEventScanner) append(b []byte) {
 	if s.overflow {
 		return
 	}

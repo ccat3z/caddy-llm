@@ -79,3 +79,53 @@ func TestTracerNormalCompletionStillRecordsOnce(t *testing.T) {
 		t.Fatalf("rows = %d, want exactly 1", len(list))
 	}
 }
+
+// TestTracerProtocolScanner: a registered usage protocol supplies the
+// scanner for dialects the built-in one cannot parse.
+type fakeProtocol struct{}
+
+func (fakeProtocol) Name() string             { return "fake" }
+func (fakeProtocol) NewScanner() UsageScanner { return &fakeScanner{} }
+
+type fakeScanner struct{ got []byte }
+
+func (s *fakeScanner) Write(p []byte) { s.got = append(s.got, p...) }
+func (s *fakeScanner) Result() *Usage {
+	if len(s.got) == 0 {
+		return nil
+	}
+	return &Usage{Input: 5, Cache: 6, Output: 7}
+}
+
+func TestTracerProtocolScanner(t *testing.T) {
+	RegisterUsageProtocol(fakeProtocol{})
+	s, _ := newTestStore(t)
+	defer s.close()
+	tr := &Tracer{TraceName: "stub", Protocol: "fake", app: &Store{db: s}}
+
+	downstream := caddyhttp.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("not a dialect the built-in scanner reads"))
+		return nil
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"messages":[]}`))
+	if err := tr.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.ServeHTTP(httptest.NewRecorder(), req, downstream); err != nil {
+		t.Fatal(err)
+	}
+	list, err := s.List(context.Background(), Query{})
+	if err != nil || len(list) != 1 {
+		t.Fatalf("list = %v, %v", list, err)
+	}
+	if list[0].InputTokens != 5 || list[0].CacheTokens != 6 || list[0].OutputTokens != 7 {
+		t.Errorf("usage = %d/%d/%d, want 5/6/7", list[0].InputTokens, list[0].CacheTokens, list[0].OutputTokens)
+	}
+}
+
+func TestTracerUnknownProtocolRejected(t *testing.T) {
+	if err := (&Tracer{Protocol: "no-such-protocol"}).Validate(); err == nil {
+		t.Fatal("unknown protocol accepted")
+	}
+}

@@ -49,6 +49,11 @@ type Tracer struct {
 	// input_tokens excluding cache already — leave this false for them.
 	CacheInInput bool `json:"cache_in_input,omitempty"`
 
+	// Protocol selects a registered usage-extraction protocol (see
+	// RegisterUsageProtocol) for wire dialects the built-in scanner cannot
+	// parse. Empty uses the built-in scanner.
+	Protocol string `json:"protocol,omitempty"`
+
 	logger *zap.Logger
 	app    *Store
 }
@@ -83,6 +88,14 @@ func (t *Tracer) storage() storage {
 
 // Interface guard
 var _ caddyhttp.MiddlewareHandler = (*Tracer)(nil)
+
+// Validate rejects a configured protocol that nothing registered.
+func (t *Tracer) Validate() error {
+	if t.Protocol != "" && usageProtocol(t.Protocol) == nil {
+		return fmt.Errorf("trace protocol %q is not registered", t.Protocol)
+	}
+	return nil
+}
 
 func (t *Tracer) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 	start := time.Now()
@@ -169,13 +182,19 @@ func (t *Tracer) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 	}
 	// The model the client asked for — both OpenAI and Claude native put it
 	// at the top level of the JSON body. Best-effort: a non-JSON body just
-	// leaves it empty.
+	// leaves it empty. Wire dialects whose body carries no model field fall
+	// back to the upstream model name llm_route exported for this request.
 	var model string
 	if root != nil {
 		model, _ = root.Get("model").String()
 	}
+	if model == "" {
+		if name, ok := caddyhttp.GetVar(r.Context(), "llm.model").(string); ok {
+			model = name
+		}
+	}
 
-	rw := &teeResponseWriter{ResponseWriter: w, tracer: t, traceID: traceID, name: t.TraceName, storage: s}
+	rw := &teeResponseWriter{ResponseWriter: w, tracer: t, traceID: traceID, name: t.TraceName, storage: s, usage: t.newUsageScanner()}
 	defer func() {
 		// Record in a defer: reverse_proxy panics with http.ErrAbortHandler
 		// when a response stream breaks mid-way (e.g. the client disconnects
@@ -208,7 +227,7 @@ type teeResponseWriter struct {
 	name      string
 	storage   storage
 	headSaved bool
-	usage     usageScanner // incremental usage extraction from the body
+	usage     UsageScanner // incremental usage extraction from the body
 }
 
 func (w *teeResponseWriter) WriteHeader(status int) {
@@ -291,6 +310,11 @@ func parseCaddyfile(h httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, error)
 			switch h.Val() {
 			case "cache_in_input":
 				t.CacheInInput = true
+			case "protocol":
+				if !h.NextArg() {
+					return nil, h.ArgErr()
+				}
+				t.Protocol = h.Val()
 			default:
 				return nil, h.Errf("unknown subdirective %q", h.Val())
 			}

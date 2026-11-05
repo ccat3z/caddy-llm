@@ -177,3 +177,20 @@ func TestNormalizeCacheInInput(t *testing.T) {
 		t.Errorf("negative clamp: %+v", n3)
 	}
 }
+
+func TestExtractUsageSSEWithoutSpace(t *testing.T) {
+	// The SSE spec allows the optional space after "data:" to be omitted.
+	body := strings.Join([]string{
+		`data:{"id":"cc","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":24277,"completion_tokens":101,"prompt_tokens_details":{"cached_tokens":1024}}}`,
+		``,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	u := extractUsage([]byte(body))
+	if u == nil {
+		t.Fatal("no usage")
+	}
+	if u.Input != 24277 || u.Cache != 1024 || u.Output != 101 {
+		t.Errorf("usage = %+v", u)
+	}
+}
