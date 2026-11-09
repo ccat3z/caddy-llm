@@ -8,6 +8,7 @@ import (
 	_ "github.com/caddyserver/caddy/v2/modules/standard"
 
 	// caddy-llm modules.
+	_ "github.com/ccat3z/caddy-llm/claudeservertool"
 	_ "github.com/ccat3z/caddy-llm/claudetoopenai"
 	_ "github.com/ccat3z/caddy-llm/imagefallback"
 	_ "github.com/ccat3z/caddy-llm/llmalias"
